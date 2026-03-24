@@ -42,6 +42,7 @@ architecture:
 training:
   epochs: 100
   accum_steps: 1
+  memory_efficient_multistage: true
   learning_rate: 1.0e-4
   weight_decay: 1.0e-2
   grad_clip_norm: 1.0

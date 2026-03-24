@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.amp import autocast
 from contextlib import nullcontext
+import warnings
 
 _dynamo_disable = torch._dynamo.disable if hasattr(torch, "_dynamo") else (lambda fn: fn)
 
@@ -129,7 +130,8 @@ class FourierUnit(nn.Module):
 
     def _frequency_conv(self, x_fft, h, w):
         batch = x_fft.shape[0]
-        ffted = torch.stack((x_fft.real, x_fft.imag), dim=-1).permute(0, 1, 4, 2, 3).contiguous()
+        # view_as_real avoids an extra allocation versus stacking real/imag tensors.
+        ffted = torch.view_as_real(x_fft).permute(0, 1, 4, 2, 3).contiguous()
         ffted = ffted.view((batch, -1,) + ffted.size()[3:])
 
         cv = torch.linspace(0, 1, h, dtype=torch.float32, device=ffted.device)[None, None, :, None].expand(batch, 1, h, w)
@@ -159,9 +161,16 @@ class FourierUnit(nn.Module):
 
             amp_ctx = autocast('cuda', enabled=True) if x_fft_in.is_cuda else nullcontext()
             with amp_ctx:
-                ffted = torch.fft.rfftn(x_fft_in, dim=(-2, -1), norm='ortho')
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message="ComplexHalf support is experimental",
+                        category=UserWarning,
+                    )
+                    ffted = torch.fft.rfftn(x_fft_in, dim=(-2, -1), norm='ortho')
                 h_fft, w_fft = ffted.shape[-2:]
-                ffted = self._frequency_conv(ffted.to(torch.complex64), h_fft, w_fft)
+                # Keep pad_fp16 in reduced precision to control memory footprint.
+                ffted = self._frequency_conv(ffted, h_fft, w_fft)
                 output = torch.fft.irfftn(ffted, s=x_fft_in.shape[-2:], dim=(-2, -1), norm='ortho')
 
             output = output[..., :h_in, :w_in]

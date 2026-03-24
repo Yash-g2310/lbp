@@ -146,6 +146,39 @@ def compute_multistage_loss(
     return total, stats
 
 
+def compute_single_stage_loss(
+    model: torch.nn.Module,
+    criterion: SILogLoss,
+    images: torch.Tensor,
+    depth: torch.Tensor,
+    decoder_w: float,
+    bottleneck_w: float,
+    use_ckpt: bool,
+    precomputed_dino: torch.Tensor | None,
+    target_layer: int,
+    prefix: str,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    out = model(
+        images,
+        target_layer=target_layer,
+        return_intermediate=True,
+        use_checkpointing=use_ckpt,
+        precomputed_dino=precomputed_dino,
+    )
+
+    l_b = criterion(out["bottleneck"], depth)
+    l_d = criterion(out["decoder"], depth)
+    l_f = criterion(out["final"], depth)
+
+    total = l_f + decoder_w * l_d + bottleneck_w * l_b
+    stats = {
+        f"{prefix}_b": float(l_b.detach().item()),
+        f"{prefix}_d": float(l_d.detach().item()),
+        f"{prefix}_f": float(l_f.detach().item()),
+    }
+    return total, stats
+
+
 def save_checkpoint(
     path: Path,
     epoch: int,
@@ -227,6 +260,7 @@ def main() -> None:
         compile_options = dict(config["hardware"].get("compile_options", {}) or {})
         if bool(config["hardware"].get("compile_no_cudagraphs", True)):
             compile_options.setdefault("triton.cudagraphs", False)
+        compile_options.setdefault("max_autotune_gemm", False)
         # Torch 2.10 disallows passing both mode and options together.
         if compile_options:
             model = torch.compile(
@@ -264,6 +298,7 @@ def main() -> None:
     max_epochs = int(config["training"]["epochs"])
     log_every = int(log_cfg.get("train_log_every_steps", log_cfg.get("log_every_steps", 20)))
     use_ckpt = bool(config["architecture"].get("use_gradient_checkpointing", False))
+    memory_efficient_multistage = bool(config["training"].get("memory_efficient_multistage", True))
     grad_clip_norm = float(config["training"].get("grad_clip_norm", 1.0))
     global_step = start_epoch * max(1, len(train_loader))
 
@@ -304,31 +339,79 @@ def main() -> None:
                 precomputed_dino = precomputed_dino.to(device, non_blocking=True)
 
             amp_ctx = torch.autocast(device_type="cuda", enabled=amp_enabled) if device.type == "cuda" else nullcontext()
-            with amp_ctx:
-                loss, components = compute_multistage_loss(
-                    model,
-                    criterion,
-                    images,
-                    depth_1,
-                    depth_2,
-                    decoder_w,
-                    bottleneck_w,
-                    use_ckpt,
-                    precomputed_dino,
-                )
-                scaled_loss = loss / accum_steps
+            if memory_efficient_multistage:
+                with amp_ctx:
+                    loss1, comp1 = compute_single_stage_loss(
+                        model,
+                        criterion,
+                        images,
+                        depth_1,
+                        decoder_w,
+                        bottleneck_w,
+                        use_ckpt,
+                        precomputed_dino,
+                        target_layer=1,
+                        prefix="l1",
+                    )
+                if not torch.isfinite(loss1):
+                    raise RuntimeError(
+                        "Non-finite training loss detected in stage-1. "
+                        f"epoch={epoch+1} step={step+1} components={comp1}; "
+                        f"{tensor_stats(images, 'images')}; {tensor_stats(depth_1, 'depth_1')}; "
+                        f"{tensor_stats(depth_2, 'depth_2')}; {tensor_stats(precomputed_dino, 'precomputed_dino')}"
+                    )
+                scaler.scale(loss1 / accum_steps).backward()
 
-            if not torch.isfinite(loss):
-                raise RuntimeError(
-                    "Non-finite training loss detected. "
-                    "Try safer numerics for server runs (e.g., architecture.fft_mode=fp32 and/or hardware.amp=false). "
-                    "For memory-limited runs prefer architecture.fft_mode=pad_fp16. "
-                    f"epoch={epoch+1} step={step+1} components={components}; "
-                    f"{tensor_stats(images, 'images')}; {tensor_stats(depth_1, 'depth_1')}; "
-                    f"{tensor_stats(depth_2, 'depth_2')}; {tensor_stats(precomputed_dino, 'precomputed_dino')}"
-                )
+                with amp_ctx:
+                    loss2, comp2 = compute_single_stage_loss(
+                        model,
+                        criterion,
+                        images,
+                        depth_2,
+                        decoder_w,
+                        bottleneck_w,
+                        use_ckpt,
+                        precomputed_dino,
+                        target_layer=2,
+                        prefix="l2",
+                    )
+                if not torch.isfinite(loss2):
+                    raise RuntimeError(
+                        "Non-finite training loss detected in stage-2. "
+                        f"epoch={epoch+1} step={step+1} components={comp2}; "
+                        f"{tensor_stats(images, 'images')}; {tensor_stats(depth_1, 'depth_1')}; "
+                        f"{tensor_stats(depth_2, 'depth_2')}; {tensor_stats(precomputed_dino, 'precomputed_dino')}"
+                    )
+                scaler.scale(loss2 / accum_steps).backward()
 
-            scaler.scale(scaled_loss).backward()
+                loss = loss1 + loss2
+                components = {**comp1, **comp2}
+            else:
+                with amp_ctx:
+                    loss, components = compute_multistage_loss(
+                        model,
+                        criterion,
+                        images,
+                        depth_1,
+                        depth_2,
+                        decoder_w,
+                        bottleneck_w,
+                        use_ckpt,
+                        precomputed_dino,
+                    )
+                    scaled_loss = loss / accum_steps
+
+                if not torch.isfinite(loss):
+                    raise RuntimeError(
+                        "Non-finite training loss detected. "
+                        "Try safer numerics for server runs (e.g., architecture.fft_mode=fp32 and/or hardware.amp=false). "
+                        "For memory-limited runs prefer architecture.fft_mode=pad_fp16. "
+                        f"epoch={epoch+1} step={step+1} components={components}; "
+                        f"{tensor_stats(images, 'images')}; {tensor_stats(depth_1, 'depth_1')}; "
+                        f"{tensor_stats(depth_2, 'depth_2')}; {tensor_stats(precomputed_dino, 'precomputed_dino')}"
+                    )
+
+                scaler.scale(scaled_loss).backward()
 
             should_step = ((step + 1) % accum_steps == 0) or ((step + 1) == len(train_loader))
             if should_step:
