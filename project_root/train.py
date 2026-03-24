@@ -272,6 +272,13 @@ def main() -> None:
                 )
                 scaled_loss = loss / accum_steps
 
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    "Non-finite training loss detected. "
+                    "Try safer numerics for server runs (e.g., architecture.fft_mode=fp32 and/or hardware.amp=false). "
+                    f"epoch={epoch+1} step={step+1} components={components}"
+                )
+
             scaler.scale(scaled_loss).backward()
 
             should_step = ((step + 1) % accum_steps == 0) or ((step + 1) == len(train_loader))

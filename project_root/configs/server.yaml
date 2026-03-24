@@ -32,7 +32,7 @@ architecture:
   num_rhag: 3
   window_size: 7
   use_gradient_checkpointing: false
-  fft_mode: pad_fp16
+  fft_mode: fp32
   fft_pad_size: 256
   dino_embed_dim: 384
 
