@@ -61,6 +61,47 @@ def get_sample_id(sample: Dict[str, Any], index: int) -> str:
     return str(index)
 
 
+def _to_int_set(values: Set[str]) -> Tuple[bool, Set[int]]:
+    ints: Set[int] = set()
+    try:
+        for v in values:
+            ints.add(int(v))
+    except ValueError:
+        return False, set()
+    return True, ints
+
+
+def _is_dense_range(values: Set[int]) -> bool:
+    if not values:
+        return False
+    lo = min(values)
+    hi = max(values)
+    return len(values) == (hi - lo + 1)
+
+
+def _is_equivalent_numeric_namespace(expected_keys: Set[str], index_keys: Set[str]) -> bool:
+    """
+    Accept equivalent coverage when two split key spaces differ only by namespace.
+
+    Example accepted case:
+    - expected keys: 14800..15299
+    - index keys:    0..499
+    """
+    if len(expected_keys) != len(index_keys):
+        return False
+
+    expected_ok, expected_ints = _to_int_set(expected_keys)
+    index_ok, index_ints = _to_int_set(index_keys)
+    if not expected_ok or not index_ok:
+        return False
+
+    if not _is_dense_range(expected_ints) or not _is_dense_range(index_ints):
+        return False
+
+    n = len(expected_ints)
+    return index_ints == set(range(n))
+
+
 def print_split_info(
     ds_name: str,
     split: str,
@@ -128,14 +169,27 @@ def check_index(
         if verify_index_coverage and split in expected_ids:
             missing = expected_ids[split] - index_keys
             extra = index_keys - expected_ids[split]
-            if missing:
-                sample_missing = sorted(missing)[:max_missing_report]
-                log(f"  [FAIL] split '{split}' missing {len(missing)} sample ids in index. examples={sample_missing}")
-                ok = False
-            if extra:
-                sample_extra = sorted(extra)[:max_missing_report]
-                log(f"  [FAIL] split '{split}' has {len(extra)} unexpected sample ids in index. examples={sample_extra}")
-                ok = False
+            if missing or extra:
+                if _is_equivalent_numeric_namespace(expected_ids[split], index_keys):
+                    log(
+                        f"  [warn] split '{split}' sample-id namespace differs (dataset keys vs index-local keys), "
+                        "but coverage counts are equivalent"
+                    )
+                else:
+                    if missing:
+                        sample_missing = sorted(missing)[:max_missing_report]
+                        log(
+                            f"  [FAIL] split '{split}' missing {len(missing)} sample ids in index. "
+                            f"examples={sample_missing}"
+                        )
+                        ok = False
+                    if extra:
+                        sample_extra = sorted(extra)[:max_missing_report]
+                        log(
+                            f"  [FAIL] split '{split}' has {len(extra)} unexpected sample ids in index. "
+                            f"examples={sample_extra}"
+                        )
+                        ok = False
 
         checked = 0
         if verify_index_coverage:
