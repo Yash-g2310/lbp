@@ -363,6 +363,7 @@ def main() -> None:
     memory_efficient_multistage = bool(config["training"].get("memory_efficient_multistage", True))
     retry_nonfinite_with_fp32 = bool(config["training"].get("retry_nonfinite_with_fp32", False))
     auto_disable_amp_on_nonfinite = bool(config["training"].get("auto_disable_amp_on_nonfinite", False))
+    skip_nonfinite_grad_step = bool(config["training"].get("skip_nonfinite_grad_step", True))
     grad_clip_norm = float(config["training"].get("grad_clip_norm", 1.0))
     global_step = start_epoch * max(1, len(train_loader))
     amp_runtime_enabled = amp_enabled
@@ -540,19 +541,34 @@ def main() -> None:
             if should_step:
                 scaler.unscale_(optimizer)
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm * accum_steps)
+                skip_step = False
                 if not torch.isfinite(grad_norm):
-                    raise RuntimeError(
-                        f"Non-finite gradient norm detected at epoch={epoch+1} step={step+1}: grad_norm={float(grad_norm)}"
-                    )
+                    if amp_runtime_enabled:
+                        log_terminal(
+                            log_to_terminal,
+                            f"[warn] non-finite grad_norm at epoch={epoch+1} step={step+1}; "
+                            "allowing GradScaler to handle overflow/skip",
+                        )
+                    elif skip_nonfinite_grad_step:
+                        log_terminal(
+                            log_to_terminal,
+                            f"[warn] non-finite grad_norm at epoch={epoch+1} step={step+1}; skipping optimizer step",
+                        )
+                        skip_step = True
+                    else:
+                        raise RuntimeError(
+                            f"Non-finite gradient norm detected at epoch={epoch+1} step={step+1}: grad_norm={float(grad_norm)}"
+                        )
 
-                scale_before = scaler.get_scale()
-                scaler.step(optimizer)
-                scaler.update()
-                if scaler.get_scale() < scale_before:
-                    log_terminal(
-                        log_to_terminal,
-                        f"[warn] AMP overflow/skip at epoch={epoch+1} step={step+1}; scaler {scale_before} -> {scaler.get_scale()}",
-                    )
+                if not skip_step:
+                    scale_before = scaler.get_scale()
+                    scaler.step(optimizer)
+                    scaler.update()
+                    if amp_runtime_enabled and scaler.get_scale() < scale_before:
+                        log_terminal(
+                            log_to_terminal,
+                            f"[warn] AMP overflow/skip at epoch={epoch+1} step={step+1}; scaler {scale_before} -> {scaler.get_scale()}",
+                        )
                 optimizer.zero_grad(set_to_none=True)
             else:
                 grad_norm = None

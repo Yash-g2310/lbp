@@ -45,6 +45,7 @@ training:
   memory_efficient_multistage: true
   retry_nonfinite_with_fp32: false
   auto_disable_amp_on_nonfinite: false
+  skip_nonfinite_grad_step: true
   learning_rate: 1.0e-4
   weight_decay: 1.0e-2
   grad_clip_norm: 1.0
