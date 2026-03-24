@@ -5,7 +5,7 @@ experiment:
 hardware:
   device: cuda
   num_workers: 0
-  compile_model: true
+  compile_model: false
   amp: true
 
 data:
