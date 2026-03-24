@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Server preflight validation against cluster policy and config requirements."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+from pathlib import Path
+from typing import Any, Dict
+
+import yaml
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Preflight checks for server config and slurm script")
+    p.add_argument("--config", required=True, help="Server YAML config")
+    p.add_argument("--sbatch", required=False, help="Optional sbatch file to validate")
+    return p.parse_args()
+
+
+def load_yaml(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError("Config must parse to mapping")
+    return cfg
+
+
+def parse_sbatch(path: Path) -> Dict[str, str]:
+    cfg: Dict[str, str] = {}
+    patt = re.compile(r"^#SBATCH\s+--([^=\s]+)(?:=(.+))?$")
+    for line in path.read_text(encoding="utf-8").splitlines():
+        m = patt.match(line.strip())
+        if not m:
+            continue
+        key = m.group(1)
+        value = (m.group(2) or "").strip()
+        cfg[key] = value
+    return cfg
+
+
+def fail(msg: str) -> None:
+    raise SystemExit(f"[FAIL] {msg}")
+
+
+def has_wandb_auth() -> bool:
+    if os.environ.get("WANDB_API_KEY"):
+        return True
+    netrc = Path.home() / ".netrc"
+    if not netrc.exists():
+        return False
+    content = netrc.read_text(encoding="utf-8", errors="ignore")
+    return "api.wandb.ai" in content
+
+
+def has_hf_auth() -> bool:
+    if os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN"):
+        return True
+    token_file = Path.home() / ".cache" / "huggingface" / "token"
+    return token_file.exists()
+
+
+def main() -> None:
+    args = parse_args()
+    cfg = load_yaml(args.config)
+
+    data_cfg = cfg["data"]
+    hw_cfg = cfg["hardware"]
+    log_cfg = cfg.get("logging", {})
+    auth_cfg = cfg.get("auth", {})
+
+    if hw_cfg.get("device") != "cuda":
+        fail("hardware.device must be 'cuda' for server runs")
+
+    if int(hw_cfg.get("num_workers", 0)) > 40:
+        fail("num_workers must be <= 40 to respect CPU thread policy")
+
+    if bool(data_cfg.get("use_precomputed_dino", False)) is False:
+        fail("server policy requires use_precomputed_dino=true")
+
+    index_path = Path(data_cfg.get("precomputed_index_path", ""))
+    if not index_path.exists():
+        fail(f"precomputed_index_path missing: {index_path}")
+
+    staged_root = Path(data_cfg.get("staged_root", ""))
+    if not staged_root.exists():
+        fail(
+            f"staged_root missing: {staged_root}. On server, verify /scratch availability with 'ls -ld /scratch'. "
+            "If unavailable, update config to a writable path under /mnt/home2/home/<username>."
+        )
+
+    if bool(log_cfg.get("use_wandb", False)) and bool(auth_cfg.get("require_wandb_login", False)):
+        if not has_wandb_auth():
+            fail("W&B auth not found. Run 'wandb login' or set WANDB_API_KEY before submission")
+
+    if bool(auth_cfg.get("require_hf_login", False)) and not has_hf_auth():
+        fail("Hugging Face auth not found. Run 'huggingface-cli login' or set HF_TOKEN")
+
+    if args.sbatch:
+        sbatch_cfg = parse_sbatch(Path(args.sbatch))
+
+        gpus = sbatch_cfg.get("gres", "")
+        if "gpu:1" not in gpus and sbatch_cfg.get("gpus", "") not in {"1", ""}:
+            fail("SBATCH must request exactly one GPU (e.g., --gres=gpu:1)")
+
+        cpus = int(sbatch_cfg.get("cpus-per-task", "0") or "0")
+        if cpus > 40:
+            fail("SBATCH cpus-per-task must be <= 40")
+
+        time_str = sbatch_cfg.get("time", "")
+        if time_str:
+            h, m, s = [int(x) for x in time_str.split(":")]
+            total_hours = h + m / 60 + s / 3600
+            if total_hours > 24:
+                fail("SBATCH time must be <= 24:00:00")
+
+        mem_str = sbatch_cfg.get("mem", "")
+        if cpus > 0 and mem_str.endswith("G"):
+            mem_gb = float(mem_str[:-1])
+            if mem_gb > cpus * 4:
+                fail("SBATCH mem exceeds 4GB per requested CPU policy")
+
+    print("[OK] preflight_server passed")
+
+
+if __name__ == "__main__":
+    main()

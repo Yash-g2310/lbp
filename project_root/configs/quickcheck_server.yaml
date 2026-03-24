@@ -1,0 +1,87 @@
+experiment:
+  name: layered-depth-quickcheck-server
+  seed: 42
+
+hardware:
+  device: cuda
+  num_workers: 2
+  compile_model: false
+  amp: true
+
+data:
+  train_dataset_name: princeton-vl/LayeredDepth-Syn
+  train_split: train
+  val_dataset_name: princeton-vl/LayeredDepth-Syn
+  val_split: validation
+  cache_dir: /mnt/home2/home/yash_g/.cache/huggingface/datasets
+  staged_root: /mnt/home2/home/yash_g/layered_depth
+  require_local_staging: true
+  pin_memory: true
+  persistent_workers: false
+  batch_size: 2
+  val_batch_size: 1
+  use_precomputed_dino: true
+  precomputed_index_path: /mnt/home2/home/yash_g/layered_depth/features/index.json
+
+architecture:
+  strategy: concat
+  base_channels: 32
+  num_sfin: 1
+  num_rhag: 2
+  window_size: 7
+  use_gradient_checkpointing: false
+  fft_mode: pad_fp16
+  fft_pad_size: 256
+  dino_embed_dim: 384
+
+training:
+  epochs: 1
+  accum_steps: 1
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-2
+  grad_clip_norm: 1.0
+  scheduler:
+    name: cosine
+    t_max_epochs: 1
+    eta_min: 1.0e-6
+  checkpoint:
+    dir: ./artifacts/quickcheck/checkpoints
+    latest_name: latest_checkpoint.pth
+    best_name: best_checkpoint.pth
+    save_every_epochs: 1
+  curriculum:
+    enabled: true
+    midpoint_fraction: 0.5
+    decoder_weight: 0.5
+    bottleneck_weight: 0.25
+
+logging:
+  use_wandb: true
+  project: layered-depth-estimation
+  entity: null
+  run_name: quickcheck-server
+  mode: dryrun
+  log_every_steps: 1
+  train_log_every_steps: 1
+  log_to_terminal: true
+  verbose_components: true
+  watch_model: false
+  watch_log: gradients
+  watch_log_freq: 10
+
+evaluation:
+  run_after_train: false
+  run_synth_validation: true
+  run_real_tuple_eval: true
+  real_dataset_name: princeton-vl/LayeredDepth
+  real_splits: [validation, test]
+  real_layer_keys: [layer_all, layer_first]
+  target_layer: 1
+  synth_max_batches: 5
+  real_max_samples: 20
+  report_dir: ./artifacts/quickcheck/reports
+  checkpoint_name: best_checkpoint.pth
+
+auth:
+  require_wandb_login: true
+  require_hf_login: false
