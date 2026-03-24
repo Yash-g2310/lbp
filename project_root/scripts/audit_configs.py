@@ -84,15 +84,42 @@ def audit_one(path: Path) -> bool:
             print(f"[FAIL] {key}: expected {exp_name}, got {type(value).__name__}")
 
     # Domain sanity checks
+    if deep_get(cfg, "training.epochs") <= 0:
+        ok = False
+        print("[FAIL] training.epochs must be > 0")
     if deep_get(cfg, "data.batch_size") <= 0:
         ok = False
         print("[FAIL] data.batch_size must be > 0")
+    if deep_get(cfg, "data.val_batch_size") <= 0:
+        ok = False
+        print("[FAIL] data.val_batch_size must be > 0")
     if deep_get(cfg, "training.accum_steps") <= 0:
         ok = False
         print("[FAIL] training.accum_steps must be > 0")
+    if float(deep_get(cfg, "training.learning_rate")) <= 0:
+        ok = False
+        print("[FAIL] training.learning_rate must be > 0")
+    if float(deep_get(cfg, "training.grad_clip_norm")) <= 0:
+        ok = False
+        print("[FAIL] training.grad_clip_norm must be > 0")
     if deep_get(cfg, "logging.train_log_every_steps") <= 0:
         ok = False
         print("[FAIL] logging.train_log_every_steps must be > 0")
+
+    if deep_get(cfg, "architecture.base_channels") <= 0:
+        ok = False
+        print("[FAIL] architecture.base_channels must be > 0")
+    if deep_get(cfg, "architecture.num_sfin") <= 0:
+        ok = False
+        print("[FAIL] architecture.num_sfin must be > 0")
+    if deep_get(cfg, "architecture.num_rhag") <= 0:
+        ok = False
+        print("[FAIL] architecture.num_rhag must be > 0")
+
+    midpoint = float(deep_get(cfg, "training.curriculum.midpoint_fraction"))
+    if midpoint < 0.0 or midpoint > 1.0:
+        ok = False
+        print("[FAIL] training.curriculum.midpoint_fraction must be in [0, 1]")
 
     if ok:
         print("[OK] Schema and basic sanity checks passed")
