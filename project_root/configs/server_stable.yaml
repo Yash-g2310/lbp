@@ -42,6 +42,9 @@ architecture:
 training:
   epochs: 100
   accum_steps: 1
+  auto_disable_amp_on_overflow: true
+  amp_overflow_patience: 8
+  amp_disable_scale_threshold: 128.0
   learning_rate: 1.0e-4
   weight_decay: 1.0e-2
   grad_clip_norm: 1.0

@@ -48,6 +48,9 @@ training:
   memory_efficient_multistage: true
   retry_nonfinite_with_fp32: false
   auto_disable_amp_on_nonfinite: false
+  auto_disable_amp_on_overflow: true
+  amp_overflow_patience: 8
+  amp_disable_scale_threshold: 128.0
   skip_nonfinite_grad_step: true
   learning_rate: 1.0e-4
   weight_decay: 1.0e-2
