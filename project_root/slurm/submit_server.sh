@@ -22,4 +22,11 @@ esac
 
 "$PYTHON_BIN" "$ROOT_DIR/scripts/preflight_server.py" --config "$CONFIG_PATH" --sbatch "$SBATCH_FILE"
 
-sbatch --export=ALL,ROOT_DIR="$ROOT_DIR",PYTHON_BIN="$PYTHON_BIN",CONFIG_PATH="$CONFIG_PATH" "$SBATCH_FILE"
+mkdir -p "$ROOT_DIR/logs"
+
+sbatch \
+  --chdir="$ROOT_DIR" \
+  --output="$ROOT_DIR/logs/%x-%j.out" \
+  --error="$ROOT_DIR/logs/%x-%j.err" \
+  --export=ALL,ROOT_DIR="$ROOT_DIR",PYTHON_BIN="$PYTHON_BIN",CONFIG_PATH="$CONFIG_PATH" \
+  "$SBATCH_FILE"
