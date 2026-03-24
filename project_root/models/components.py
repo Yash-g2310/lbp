@@ -9,6 +9,8 @@ import torch.nn.functional as F
 from torch.amp import autocast
 from contextlib import nullcontext
 
+_dynamo_disable = torch._dynamo.disable if hasattr(torch, "_dynamo") else (lambda fn: fn)
+
 # ==========================================
 # 1. HYBRID ATTENTION BLOCKS (RHAG)
 # ==========================================
@@ -136,6 +138,7 @@ class FourierUnit(nn.Module):
         ffted = ffted.view((batch, -1, 2,) + ffted.size()[2:]).permute(0, 1, 3, 4, 2).contiguous()
         return torch.complex(ffted[..., 0], ffted[..., 1])
 
+    @_dynamo_disable
     def forward(self, x):
         orig_dtype = x.dtype
 

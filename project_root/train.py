@@ -221,18 +221,9 @@ def main() -> None:
     ).to(device)
 
     compile_requested = bool(config["hardware"].get("compile_model", False))
-    fft_mode = str(config["architecture"].get("fft_mode", "fp32"))
-    allow_compile_with_fft = bool(config["hardware"].get("allow_compile_with_fft", False))
     if compile_requested and hasattr(torch, "compile"):
-        # TorchInductor currently struggles with complex FFT-heavy graphs in this model.
-        if fft_mode in {"fp32", "pad_fp16"} and not allow_compile_with_fft:
-            log_terminal(
-                log_to_terminal,
-                "[warn] compile_model requested but disabled for FFT-based architecture to avoid Inductor OOM. "
-                "Set hardware.allow_compile_with_fft=true to override at your own risk.",
-            )
-        else:
-            model = torch.compile(model)
+        compile_mode = str(config["hardware"].get("compile_mode", "reduce-overhead"))
+        model = torch.compile(model, mode=compile_mode)
 
     optimizer = optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -315,6 +306,7 @@ def main() -> None:
                 raise RuntimeError(
                     "Non-finite training loss detected. "
                     "Try safer numerics for server runs (e.g., architecture.fft_mode=fp32 and/or hardware.amp=false). "
+                    "For memory-limited runs prefer architecture.fft_mode=pad_fp16. "
                     f"epoch={epoch+1} step={step+1} components={components}; "
                     f"{tensor_stats(images, 'images')}; {tensor_stats(depth_1, 'depth_1')}; "
                     f"{tensor_stats(depth_2, 'depth_2')}; {tensor_stats(precomputed_dino, 'precomputed_dino')}"
