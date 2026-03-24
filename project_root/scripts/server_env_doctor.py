@@ -7,6 +7,7 @@ import argparse
 import os
 from pathlib import Path
 from typing import Any, Dict
+import sys
 
 import yaml
 
@@ -67,6 +68,16 @@ def main() -> None:
     print("[doctor] server environment diagnostics")
     print(f"[doctor] user={os.environ.get('USER', '<unknown>')}")
     print(f"[doctor] cwd={Path.cwd()}")
+    print(f"[doctor] python={sys.executable}")
+
+    missing_mods = []
+    for mod in ("numpy", "torch", "yaml", "wandb"):
+        try:
+            __import__(mod)
+        except Exception:
+            missing_mods.append(mod)
+    if missing_mods:
+        raise SystemExit(f"[FAIL] Missing Python packages in current env: {', '.join(missing_mods)}")
 
     print(f"[doctor] cache_dir={cache_dir} writable={check_writable(cache_dir)}")
     print(f"[doctor] staged_root={staged_root} exists={staged_root.exists()}")

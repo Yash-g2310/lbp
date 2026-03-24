@@ -59,10 +59,11 @@ def tensor_stats(x: torch.Tensor | None, name: str) -> str:
             return f"{name}: shape={tuple(x.shape)} finite=0/{total}"
 
         x_f = x[finite]
+        mean_val = x_f.float().mean() if not (torch.is_floating_point(x_f) or torch.is_complex(x_f)) else x_f.mean()
         return (
             f"{name}: shape={tuple(x.shape)} dtype={x.dtype} "
             f"finite={finite_count}/{total} min={float(x_f.min().item()):.6g} "
-            f"max={float(x_f.max().item()):.6g} mean={float(x_f.mean().item()):.6g}"
+            f"max={float(x_f.max().item()):.6g} mean={float(mean_val.item()):.6g}"
         )
 
 

@@ -14,7 +14,16 @@ ROOT_DIR="${ROOT_DIR:-$PWD}"
 if [[ ! -f "$ROOT_DIR/train.py" ]]; then
 	ROOT_DIR="$PWD/project_root"
 fi
-PYTHON_BIN="${PYTHON_BIN:-python}"
+if [[ -n "${PYTHON_BIN:-}" ]]; then
+	PYTHON_BIN="$PYTHON_BIN"
+elif [[ -x "$HOME/.conda/envs/monodepth/bin/python" ]]; then
+	PYTHON_BIN="$HOME/.conda/envs/monodepth/bin/python"
+elif command -v python >/dev/null 2>&1; then
+	PYTHON_BIN="$(command -v python)"
+else
+	echo "[FAIL] No python executable found. Set PYTHON_BIN explicitly." >&2
+	exit 1
+fi
 CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/server.yaml}"
 
 mkdir -p "$ROOT_DIR/logs"
@@ -22,6 +31,21 @@ cd "$ROOT_DIR"
 
 # Helps reduce fragmentation-related CUDA OOMs in long FFT-heavy runs.
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
+echo "[env] Using PYTHON_BIN=$PYTHON_BIN"
+"$PYTHON_BIN" - <<'PY'
+import sys
+mods = ("numpy", "torch", "yaml", "wandb")
+missing = []
+for m in mods:
+	try:
+		__import__(m)
+	except Exception:
+		missing.append(m)
+if missing:
+	raise SystemExit(f"[FAIL] Python env missing required packages: {', '.join(missing)}; executable={sys.executable}")
+print(f"[env] python={sys.executable}")
+PY
 
 "$PYTHON_BIN" scripts/preflight_server.py --config "$CONFIG_PATH" --sbatch "$ROOT_DIR/slurm/train_server.sbatch"
 "$PYTHON_BIN" scripts/server_env_doctor.py --config "$CONFIG_PATH"
