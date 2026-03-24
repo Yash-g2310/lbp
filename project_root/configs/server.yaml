@@ -6,7 +6,9 @@ hardware:
   device: cuda
   num_workers: 4
   compile_model: true
-  compile_mode: reduce-overhead
+  compile_mode: default
+  compile_dynamic: false
+  compile_no_cudagraphs: true
   amp: true
 
 data:

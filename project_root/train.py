@@ -222,8 +222,17 @@ def main() -> None:
 
     compile_requested = bool(config["hardware"].get("compile_model", False))
     if compile_requested and hasattr(torch, "compile"):
-        compile_mode = str(config["hardware"].get("compile_mode", "reduce-overhead"))
-        model = torch.compile(model, mode=compile_mode)
+        compile_mode = str(config["hardware"].get("compile_mode", "default"))
+        compile_dynamic = bool(config["hardware"].get("compile_dynamic", False))
+        compile_options = dict(config["hardware"].get("compile_options", {}) or {})
+        if bool(config["hardware"].get("compile_no_cudagraphs", True)):
+            compile_options.setdefault("triton.cudagraphs", False)
+        model = torch.compile(
+            model,
+            mode=compile_mode,
+            dynamic=compile_dynamic,
+            options=compile_options or None,
+        )
 
     optimizer = optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
