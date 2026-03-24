@@ -17,6 +17,24 @@ from utils.logger import setup_wandb
 from utils.losses import SILogLoss
 
 
+def resolve_amp_dtype(hardware_cfg: Dict[str, Any], device: torch.device) -> torch.dtype:
+    raw = str(hardware_cfg.get("amp_dtype", "float16")).strip().lower()
+    mapping = {
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "half": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+    }
+    dtype = mapping.get(raw)
+    if dtype is None:
+        raise ValueError(f"Unsupported hardware.amp_dtype='{raw}'. Use one of: float16, bfloat16")
+
+    if dtype == torch.bfloat16 and device.type == "cuda" and not torch.cuda.is_bf16_supported():
+        return torch.float16
+    return dtype
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Layered Depth Estimation")
     parser.add_argument("--config", type=str, default="configs/local.yaml", help="Path to config YAML")
@@ -193,10 +211,15 @@ def compute_single_stage_loss_with_recovery(
     prefix: str,
     device: torch.device,
     amp_enabled: bool,
+    amp_dtype: torch.dtype,
     retry_in_fp32: bool,
     log_to_terminal: bool,
 ) -> Tuple[torch.Tensor, Dict[str, float], bool]:
-    amp_ctx = torch.autocast(device_type="cuda", enabled=amp_enabled) if device.type == "cuda" else nullcontext()
+    amp_ctx = (
+        torch.autocast(device_type="cuda", enabled=amp_enabled, dtype=amp_dtype)
+        if device.type == "cuda"
+        else nullcontext()
+    )
     with amp_ctx:
         loss, comps = compute_single_stage_loss(
             model,
@@ -298,6 +321,8 @@ def main() -> None:
     set_seed(int(config["experiment"]["seed"]))
     device = torch.device("cuda" if torch.cuda.is_available() and config["hardware"]["device"] == "cuda" else "cpu")
     amp_enabled = bool(config["hardware"].get("amp", True)) and device.type == "cuda"
+    amp_dtype = resolve_amp_dtype(config["hardware"], device) if amp_enabled else torch.float16
+    amp_scaler_enabled = amp_enabled and amp_dtype == torch.float16
     main_process = is_main_process()
     log_cfg = config.get("logging", {})
     log_to_terminal = bool(log_cfg.get("log_to_terminal", True))
@@ -344,7 +369,7 @@ def main() -> None:
     )
     scheduler = build_scheduler(optimizer, config)
     criterion = SILogLoss()
-    scaler = torch.amp.GradScaler(device=device.type, enabled=amp_enabled)
+    scaler = torch.amp.GradScaler(device=device.type, enabled=amp_scaler_enabled)
 
     train_loader, val_loader = get_dataloaders(config)
 
@@ -370,12 +395,14 @@ def main() -> None:
     grad_clip_norm = float(config["training"].get("grad_clip_norm", 1.0))
     global_step = start_epoch * max(1, len(train_loader))
     amp_runtime_enabled = amp_enabled
+    amp_runtime_dtype = amp_dtype
     consecutive_amp_overflows = 0
 
     log_terminal(
         log_to_terminal,
         (
             f"[train] device={device.type} amp={amp_enabled} compile={bool(config['hardware'].get('compile_model', False))} "
+            f"amp_dtype={str(amp_dtype).replace('torch.', '')} "
             f"precomputed_dino={bool(config['data'].get('use_precomputed_dino', False))} start_epoch={start_epoch}"
         ),
     )
@@ -422,6 +449,7 @@ def main() -> None:
                     prefix="l1",
                     device=device,
                     amp_enabled=amp_runtime_enabled,
+                    amp_dtype=amp_runtime_dtype,
                     retry_in_fp32=retry_nonfinite_with_fp32,
                     log_to_terminal=log_to_terminal,
                 )
@@ -446,6 +474,7 @@ def main() -> None:
                         prefix="l1",
                         device=device,
                         amp_enabled=amp_runtime_enabled,
+                        amp_dtype=amp_runtime_dtype,
                         retry_in_fp32=retry_nonfinite_with_fp32,
                         log_to_terminal=log_to_terminal,
                     )
@@ -471,6 +500,7 @@ def main() -> None:
                     prefix="l2",
                     device=device,
                     amp_enabled=amp_runtime_enabled,
+                    amp_dtype=amp_runtime_dtype,
                     retry_in_fp32=retry_nonfinite_with_fp32,
                     log_to_terminal=log_to_terminal,
                 )
@@ -495,6 +525,7 @@ def main() -> None:
                         prefix="l2",
                         device=device,
                         amp_enabled=amp_runtime_enabled,
+                        amp_dtype=amp_runtime_dtype,
                         retry_in_fp32=retry_nonfinite_with_fp32,
                         log_to_terminal=log_to_terminal,
                     )
@@ -514,7 +545,11 @@ def main() -> None:
                 if loss2_recovered:
                     components["l2_fp32_retry"] = 1.0
             else:
-                amp_ctx = torch.autocast(device_type="cuda", enabled=amp_runtime_enabled) if device.type == "cuda" else nullcontext()
+                amp_ctx = (
+                    torch.autocast(device_type="cuda", enabled=amp_runtime_enabled, dtype=amp_runtime_dtype)
+                    if device.type == "cuda"
+                    else nullcontext()
+                )
                 with amp_ctx:
                     loss, components = compute_multistage_loss(
                         model,
@@ -569,7 +604,7 @@ def main() -> None:
                     scaler.step(optimizer)
                     scaler.update()
                     scale_after = scaler.get_scale()
-                    if amp_runtime_enabled and scale_after < scale_before:
+                    if amp_scaler_enabled and amp_runtime_enabled and scale_after < scale_before:
                         consecutive_amp_overflows += 1
                         log_terminal(
                             log_to_terminal,
@@ -647,7 +682,11 @@ def main() -> None:
                 if precomputed_dino is not None:
                     precomputed_dino = precomputed_dino.to(device, non_blocking=True)
 
-                amp_ctx = torch.autocast(device_type="cuda", enabled=amp_runtime_enabled) if device.type == "cuda" else nullcontext()
+                amp_ctx = (
+                    torch.autocast(device_type="cuda", enabled=amp_runtime_enabled, dtype=amp_runtime_dtype)
+                    if device.type == "cuda"
+                    else nullcontext()
+                )
                 with amp_ctx:
                     val_loss, _ = compute_multistage_loss(
                         model,

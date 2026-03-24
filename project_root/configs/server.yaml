@@ -10,6 +10,7 @@ hardware:
   compile_dynamic: false
   compile_no_cudagraphs: true
   amp: true
+  amp_dtype: bfloat16
 
 data:
   train_dataset_name: princeton-vl/LayeredDepth-Syn
