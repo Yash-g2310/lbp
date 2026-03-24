@@ -90,6 +90,16 @@ def main() -> None:
             "If unavailable, update config to a writable path under /mnt/home2/home/<username>."
         )
 
+    ckpt_dir = Path(cfg.get("training", {}).get("checkpoint", {}).get("dir", ""))
+    if not str(ckpt_dir):
+        fail("training.checkpoint.dir must be set")
+    try:
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        fail(f"checkpoint dir cannot be created: {ckpt_dir} ({exc})")
+    if not os.access(ckpt_dir, os.W_OK):
+        fail(f"checkpoint dir not writable: {ckpt_dir}")
+
     if bool(log_cfg.get("use_wandb", False)) and bool(auth_cfg.get("require_wandb_login", False)):
         if not has_wandb_auth():
             fail("W&B auth not found. Run 'wandb login' or set WANDB_API_KEY before submission")
