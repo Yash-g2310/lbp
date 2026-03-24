@@ -22,8 +22,8 @@ data:
   pin_memory: false
   persistent_workers: false
   prefetch_factor: 1
-  batch_size: 32
-  val_batch_size: 2
+  batch_size: 24
+  val_batch_size: 1
   depth_scale: 1000.0
   depth_clip_min: 1.0e-3
   depth_clip_max: 30.0
@@ -37,18 +37,18 @@ architecture:
   num_sfin: 2
   num_rhag: 3
   window_size: 7
-  use_gradient_checkpointing: false
+  use_gradient_checkpointing: true
   fft_mode: pad_fp16
   fft_pad_size: 256
   dino_embed_dim: 384
 
 training:
   epochs: 100
-  accum_steps: 1
+  accum_steps: 2
   memory_efficient_multistage: true
   retry_nonfinite_with_fp32: false
   auto_disable_amp_on_nonfinite: false
-  auto_disable_amp_on_overflow: true
+  auto_disable_amp_on_overflow: false
   amp_overflow_patience: 8
   amp_disable_scale_threshold: 128.0
   skip_nonfinite_grad_step: true
