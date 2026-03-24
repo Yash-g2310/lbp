@@ -361,8 +361,8 @@ def main() -> None:
     log_every = int(log_cfg.get("train_log_every_steps", log_cfg.get("log_every_steps", 20)))
     use_ckpt = bool(config["architecture"].get("use_gradient_checkpointing", False))
     memory_efficient_multistage = bool(config["training"].get("memory_efficient_multistage", True))
-    retry_nonfinite_with_fp32 = bool(config["training"].get("retry_nonfinite_with_fp32", True))
-    auto_disable_amp_on_nonfinite = bool(config["training"].get("auto_disable_amp_on_nonfinite", True))
+    retry_nonfinite_with_fp32 = bool(config["training"].get("retry_nonfinite_with_fp32", False))
+    auto_disable_amp_on_nonfinite = bool(config["training"].get("auto_disable_amp_on_nonfinite", False))
     grad_clip_norm = float(config["training"].get("grad_clip_norm", 1.0))
     global_step = start_epoch * max(1, len(train_loader))
     amp_runtime_enabled = amp_enabled

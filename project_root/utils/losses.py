@@ -14,14 +14,14 @@ class SILogLoss(nn.Module):
         valid_mask = torch.isfinite(target) & (target > 0)
         if valid_mask.sum() == 0:
             # Keep graph connectivity so backward remains well-defined.
-            return pred.sum() * 0.0
+            return torch.nansum(pred) * 0.0
 
         pred_valid = torch.clamp(pred[valid_mask], min=1e-6)
         tgt_valid = torch.clamp(target[valid_mask], min=1e-6)
 
         finite_mask = torch.isfinite(pred_valid) & torch.isfinite(tgt_valid)
         if finite_mask.sum() == 0:
-            return pred.sum() * 0.0
+            return torch.nansum(pred) * 0.0
         pred_valid = pred_valid[finite_mask]
         tgt_valid = tgt_valid[finite_mask]
 
