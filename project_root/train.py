@@ -180,6 +180,67 @@ def compute_single_stage_loss(
     return total, stats
 
 
+def compute_single_stage_loss_with_recovery(
+    model: torch.nn.Module,
+    criterion: SILogLoss,
+    images: torch.Tensor,
+    depth: torch.Tensor,
+    decoder_w: float,
+    bottleneck_w: float,
+    use_ckpt: bool,
+    precomputed_dino: torch.Tensor | None,
+    target_layer: int,
+    prefix: str,
+    device: torch.device,
+    amp_enabled: bool,
+    retry_in_fp32: bool,
+    log_to_terminal: bool,
+) -> Tuple[torch.Tensor, Dict[str, float], bool]:
+    amp_ctx = torch.autocast(device_type="cuda", enabled=amp_enabled) if device.type == "cuda" else nullcontext()
+    with amp_ctx:
+        loss, comps = compute_single_stage_loss(
+            model,
+            criterion,
+            images,
+            depth,
+            decoder_w,
+            bottleneck_w,
+            use_ckpt,
+            precomputed_dino,
+            target_layer=target_layer,
+            prefix=prefix,
+        )
+
+    used_fp32_retry = False
+    if torch.isfinite(loss):
+        return loss, comps, used_fp32_retry
+
+    if not retry_in_fp32:
+        return loss, comps, used_fp32_retry
+
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+    fp32_ctx = torch.autocast(device_type="cuda", enabled=False) if device.type == "cuda" else nullcontext()
+    with fp32_ctx:
+        loss, comps = compute_single_stage_loss(
+            model,
+            criterion,
+            images.float(),
+            depth.float(),
+            decoder_w,
+            bottleneck_w,
+            use_ckpt,
+            precomputed_dino.float() if precomputed_dino is not None else None,
+            target_layer=target_layer,
+            prefix=prefix,
+        )
+    used_fp32_retry = True
+    if torch.isfinite(loss):
+        log_terminal(log_to_terminal, f"[warn] recovered non-finite {prefix} loss via fp32 retry")
+    return loss, comps, used_fp32_retry
+
+
 def save_checkpoint(
     path: Path,
     epoch: int,
@@ -300,8 +361,11 @@ def main() -> None:
     log_every = int(log_cfg.get("train_log_every_steps", log_cfg.get("log_every_steps", 20)))
     use_ckpt = bool(config["architecture"].get("use_gradient_checkpointing", False))
     memory_efficient_multistage = bool(config["training"].get("memory_efficient_multistage", True))
+    retry_nonfinite_with_fp32 = bool(config["training"].get("retry_nonfinite_with_fp32", True))
+    auto_disable_amp_on_nonfinite = bool(config["training"].get("auto_disable_amp_on_nonfinite", True))
     grad_clip_norm = float(config["training"].get("grad_clip_norm", 1.0))
     global_step = start_epoch * max(1, len(train_loader))
+    amp_runtime_enabled = amp_enabled
 
     log_terminal(
         log_to_terminal,
@@ -333,16 +397,38 @@ def main() -> None:
 
         for step, batch in enumerate(train_loader):
             images = batch["image"].to(device, non_blocking=True)
-            depth_1 = batch["depth_1"].to(device, non_blocking=True)
-            depth_2 = batch["depth_2"].to(device, non_blocking=True)
+            depth_1 = batch["depth_1"].to(device, non_blocking=True).float()
+            depth_2 = batch["depth_2"].to(device, non_blocking=True).float()
             precomputed_dino = batch.get("dino_features")
             if precomputed_dino is not None:
                 precomputed_dino = precomputed_dino.to(device, non_blocking=True)
 
-            amp_ctx = torch.autocast(device_type="cuda", enabled=amp_enabled) if device.type == "cuda" else nullcontext()
             if memory_efficient_multistage:
-                with amp_ctx:
-                    loss1, comp1 = compute_single_stage_loss(
+                loss1, comp1, loss1_recovered = compute_single_stage_loss_with_recovery(
+                    model,
+                    criterion,
+                    images,
+                    depth_1,
+                    decoder_w,
+                    bottleneck_w,
+                    use_ckpt,
+                    precomputed_dino,
+                    target_layer=1,
+                    prefix="l1",
+                    device=device,
+                    amp_enabled=amp_runtime_enabled,
+                    retry_in_fp32=retry_nonfinite_with_fp32,
+                    log_to_terminal=log_to_terminal,
+                )
+                if (
+                    not torch.isfinite(loss1)
+                    and device.type == "cuda"
+                    and amp_runtime_enabled
+                    and auto_disable_amp_on_nonfinite
+                ):
+                    amp_runtime_enabled = False
+                    log_terminal(log_to_terminal, "[warn] disabling AMP after non-finite stage-1 loss; retrying in fp32")
+                    loss1, comp1, loss1_recovered = compute_single_stage_loss_with_recovery(
                         model,
                         criterion,
                         images,
@@ -353,6 +439,10 @@ def main() -> None:
                         precomputed_dino,
                         target_layer=1,
                         prefix="l1",
+                        device=device,
+                        amp_enabled=amp_runtime_enabled,
+                        retry_in_fp32=retry_nonfinite_with_fp32,
+                        log_to_terminal=log_to_terminal,
                     )
                 if not torch.isfinite(loss1):
                     raise RuntimeError(
@@ -363,8 +453,31 @@ def main() -> None:
                     )
                 scaler.scale(loss1 / accum_steps).backward()
 
-                with amp_ctx:
-                    loss2, comp2 = compute_single_stage_loss(
+                loss2, comp2, loss2_recovered = compute_single_stage_loss_with_recovery(
+                    model,
+                    criterion,
+                    images,
+                    depth_2,
+                    decoder_w,
+                    bottleneck_w,
+                    use_ckpt,
+                    precomputed_dino,
+                    target_layer=2,
+                    prefix="l2",
+                    device=device,
+                    amp_enabled=amp_runtime_enabled,
+                    retry_in_fp32=retry_nonfinite_with_fp32,
+                    log_to_terminal=log_to_terminal,
+                )
+                if (
+                    not torch.isfinite(loss2)
+                    and device.type == "cuda"
+                    and amp_runtime_enabled
+                    and auto_disable_amp_on_nonfinite
+                ):
+                    amp_runtime_enabled = False
+                    log_terminal(log_to_terminal, "[warn] disabling AMP after non-finite stage-2 loss; retrying in fp32")
+                    loss2, comp2, loss2_recovered = compute_single_stage_loss_with_recovery(
                         model,
                         criterion,
                         images,
@@ -375,6 +488,10 @@ def main() -> None:
                         precomputed_dino,
                         target_layer=2,
                         prefix="l2",
+                        device=device,
+                        amp_enabled=amp_runtime_enabled,
+                        retry_in_fp32=retry_nonfinite_with_fp32,
+                        log_to_terminal=log_to_terminal,
                     )
                 if not torch.isfinite(loss2):
                     raise RuntimeError(
@@ -387,7 +504,12 @@ def main() -> None:
 
                 loss = loss1 + loss2
                 components = {**comp1, **comp2}
+                if loss1_recovered:
+                    components["l1_fp32_retry"] = 1.0
+                if loss2_recovered:
+                    components["l2_fp32_retry"] = 1.0
             else:
+                amp_ctx = torch.autocast(device_type="cuda", enabled=amp_runtime_enabled) if device.type == "cuda" else nullcontext()
                 with amp_ctx:
                     loss, components = compute_multistage_loss(
                         model,
@@ -481,13 +603,13 @@ def main() -> None:
         with torch.no_grad():
             for batch in val_loader:
                 images = batch["image"].to(device, non_blocking=True)
-                depth_1 = batch["depth_1"].to(device, non_blocking=True)
-                depth_2 = batch["depth_2"].to(device, non_blocking=True)
+                depth_1 = batch["depth_1"].to(device, non_blocking=True).float()
+                depth_2 = batch["depth_2"].to(device, non_blocking=True).float()
                 precomputed_dino = batch.get("dino_features")
                 if precomputed_dino is not None:
                     precomputed_dino = precomputed_dino.to(device, non_blocking=True)
 
-                amp_ctx = torch.autocast(device_type="cuda", enabled=amp_enabled) if device.type == "cuda" else nullcontext()
+                amp_ctx = torch.autocast(device_type="cuda", enabled=amp_runtime_enabled) if device.type == "cuda" else nullcontext()
                 with amp_ctx:
                     val_loss, _ = compute_multistage_loss(
                         model,
