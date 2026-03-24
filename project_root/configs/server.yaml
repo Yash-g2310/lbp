@@ -19,7 +19,7 @@ data:
   pin_memory: false
   persistent_workers: false
   prefetch_factor: 1
-  batch_size: 32
+  batch_size: 24
   val_batch_size: 2
   use_precomputed_dino: true
   precomputed_index_path: /mnt/home2/home/yash_g/layered_depth/features/index.json

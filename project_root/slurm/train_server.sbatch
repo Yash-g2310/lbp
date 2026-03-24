@@ -20,6 +20,9 @@ CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/server.yaml}"
 mkdir -p "$ROOT_DIR/logs"
 cd "$ROOT_DIR"
 
+# Helps reduce fragmentation-related CUDA OOMs in long FFT-heavy runs.
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
 "$PYTHON_BIN" scripts/preflight_server.py --config "$CONFIG_PATH" --sbatch "$ROOT_DIR/slurm/train_server.sbatch"
 "$PYTHON_BIN" scripts/server_env_doctor.py --config "$CONFIG_PATH"
 "$PYTHON_BIN" scripts/train_and_eval.py --config "$CONFIG_PATH" --python "$PYTHON_BIN"
