@@ -63,7 +63,24 @@ def build_model(cfg: Dict[str, Any], device: torch.device) -> torch.nn.Module:
 def load_checkpoint_model(model: torch.nn.Module, checkpoint_path: Path, device: torch.device) -> None:
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model_key = "model_state" if "model_state" in checkpoint else "model_state_dict"
-    model.load_state_dict(checkpoint[model_key])
+    missing, unexpected = model.load_state_dict(checkpoint[model_key], strict=False)
+
+    # Real-tuple evaluation builds a model with a live DINO encoder, but training
+    # may have used precomputed DINO features (encoder omitted from checkpoint).
+    # Accept missing encoder keys only; fail on everything else.
+    missing_non_encoder = [k for k in missing if not k.startswith("encoder.")]
+    if missing_non_encoder:
+        raise RuntimeError(
+            "Checkpoint is missing non-encoder weights required for evaluation: "
+            f"{missing_non_encoder[:20]}"
+        )
+    if unexpected:
+        raise RuntimeError(f"Checkpoint has unexpected keys: {unexpected[:20]}")
+    if missing:
+        print(
+            f"[eval-tuples] warning: checkpoint missing {len(missing)} encoder keys; "
+            "using freshly loaded frozen DINO encoder for evaluation"
+        )
 
 
 def image_transform() -> transforms.Compose:
