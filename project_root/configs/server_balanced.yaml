@@ -1,0 +1,90 @@
+experiment:
+  name: layered-depth-server-balanced
+  seed: 42
+
+hardware:
+  device: cuda
+  num_workers: 2
+  compile_model: true
+  amp: true
+
+data:
+  train_dataset_name: princeton-vl/LayeredDepth-Syn
+  train_split: train
+  val_dataset_name: princeton-vl/LayeredDepth-Syn
+  val_split: validation
+  cache_dir: /mnt/home2/home/yash_g/.cache/huggingface/datasets
+  staged_root: /mnt/home2/home/yash_g/layered_depth
+  require_local_staging: true
+  pin_memory: false
+  persistent_workers: false
+  prefetch_factor: 1
+  batch_size: 20
+  val_batch_size: 2
+  use_precomputed_dino: true
+  precomputed_index_path: /mnt/home2/home/yash_g/layered_depth/features/index.json
+  precomputed_max_cached_shards: 1
+
+architecture:
+  strategy: concat
+  base_channels: 64
+  num_sfin: 2
+  num_rhag: 3
+  window_size: 7
+  use_gradient_checkpointing: false
+  fft_mode: fp32
+  fft_pad_size: 256
+  dino_embed_dim: 384
+
+training:
+  epochs: 100
+  accum_steps: 1
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-2
+  grad_clip_norm: 1.0
+  scheduler:
+    name: cosine
+    t_max_epochs: 100
+    eta_min: 1.0e-6
+  checkpoint:
+    dir: ./checkpoints
+    latest_name: latest_checkpoint.pth
+    best_name: best_checkpoint.pth
+    save_every_epochs: 1
+  curriculum:
+    enabled: true
+    midpoint_fraction: 0.5
+    decoder_weight: 0.5
+    bottleneck_weight: 0.25
+    min_decay: 0.0
+
+logging:
+  use_wandb: true
+  project: layered-depth-estimation
+  entity: null
+  run_name: server-run-balanced
+  mode: online
+  log_every_steps: 20
+  train_log_every_steps: 20
+  log_to_terminal: true
+  verbose_components: true
+  watch_model: true
+  watch_log: gradients
+  watch_log_freq: 200
+
+evaluation:
+  run_after_train: true
+  run_synth_validation: true
+  run_real_tuple_eval: true
+  real_dataset_name: princeton-vl/LayeredDepth
+  real_splits: [validation, test]
+  real_layer_keys: [layer_all, layer_first]
+  target_layer: 1
+  synth_max_batches: 0
+  real_max_samples: 0
+  report_dir: ./artifacts/reports
+  checkpoint_name: best_checkpoint.pth
+
+auth:
+  require_wandb_login: true
+  require_hf_login: false

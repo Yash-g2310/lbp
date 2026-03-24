@@ -63,7 +63,12 @@ class PrecomputedFeatureStore:
             return torch.load(shard_path, map_location="cpu", weights_only=True)
         except TypeError:
             # Backward compatibility for older torch versions without weights_only.
-            return torch.load(shard_path, map_location="cpu")
+            try:
+                return torch.load(shard_path, map_location="cpu")
+            except Exception as exc:
+                raise RuntimeError(f"Failed to load precomputed shard '{shard_path}': {exc}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load precomputed shard '{shard_path}': {exc}") from exc
 
     def get(self, split_name: str, sample_id: str) -> torch.Tensor:
         split_samples = self.samples.get(split_name, self.samples)

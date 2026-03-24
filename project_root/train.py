@@ -48,6 +48,24 @@ def log_terminal(enabled: bool, message: str) -> None:
         print(message, flush=True)
 
 
+def tensor_stats(x: torch.Tensor | None, name: str) -> str:
+    if x is None:
+        return f"{name}=None"
+    with torch.no_grad():
+        finite = torch.isfinite(x)
+        finite_count = int(finite.sum().item())
+        total = int(x.numel())
+        if finite_count == 0:
+            return f"{name}: shape={tuple(x.shape)} finite=0/{total}"
+
+        x_f = x[finite]
+        return (
+            f"{name}: shape={tuple(x.shape)} dtype={x.dtype} "
+            f"finite={finite_count}/{total} min={float(x_f.min().item()):.6g} "
+            f"max={float(x_f.max().item()):.6g} mean={float(x_f.mean().item()):.6g}"
+        )
+
+
 def build_scheduler(optimizer: torch.optim.Optimizer, cfg: Dict[str, Any]):
     sched_cfg = cfg["training"]["scheduler"]
     name = sched_cfg["name"].lower()
@@ -71,7 +89,8 @@ def curriculum_weights(epoch: int, total_epochs: int, cfg: Dict[str, Any]) -> Tu
 
     tail_len = max(1, total_epochs - midpoint - 1)
     progress = (epoch - midpoint) / tail_len
-    decay = max(0.0, 1.0 - progress)
+    min_decay = float(cur_cfg.get("min_decay", 0.0))
+    decay = max(min_decay, 1.0 - progress)
     return float(cur_cfg["decoder_weight"]) * decay, float(cur_cfg["bottleneck_weight"]) * decay
 
 
@@ -241,6 +260,15 @@ def main() -> None:
         log_terminal(log_to_terminal, f"[train] W&B enabled: project={log_cfg.get('project')} run={run.name}")
     log_terminal(log_to_terminal, f"[train] Logging cadence: every {log_every} train steps")
 
+    sched_cfg = config["training"]["scheduler"]
+    if sched_cfg["name"].lower() == "cosine":
+        t_max_epochs = int(sched_cfg["t_max_epochs"])
+        if t_max_epochs != max_epochs:
+            log_terminal(
+                log_to_terminal,
+                f"[warn] scheduler.t_max_epochs ({t_max_epochs}) != training.epochs ({max_epochs}); verify annealing intent",
+            )
+
     for epoch in range(start_epoch, max_epochs):
         model.train()
         optimizer.zero_grad(set_to_none=True)
@@ -276,7 +304,9 @@ def main() -> None:
                 raise RuntimeError(
                     "Non-finite training loss detected. "
                     "Try safer numerics for server runs (e.g., architecture.fft_mode=fp32 and/or hardware.amp=false). "
-                    f"epoch={epoch+1} step={step+1} components={components}"
+                    f"epoch={epoch+1} step={step+1} components={components}; "
+                    f"{tensor_stats(images, 'images')}; {tensor_stats(depth_1, 'depth_1')}; "
+                    f"{tensor_stats(depth_2, 'depth_2')}; {tensor_stats(precomputed_dino, 'precomputed_dino')}"
                 )
 
             scaler.scale(scaled_loss).backward()
@@ -284,9 +314,20 @@ def main() -> None:
             should_step = ((step + 1) % accum_steps == 0) or ((step + 1) == len(train_loader))
             if should_step:
                 scaler.unscale_(optimizer)
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm * accum_steps)
+                if not torch.isfinite(grad_norm):
+                    raise RuntimeError(
+                        f"Non-finite gradient norm detected at epoch={epoch+1} step={step+1}: grad_norm={float(grad_norm)}"
+                    )
+
+                scale_before = scaler.get_scale()
                 scaler.step(optimizer)
                 scaler.update()
+                if scaler.get_scale() < scale_before:
+                    log_terminal(
+                        log_to_terminal,
+                        f"[warn] AMP overflow/skip at epoch={epoch+1} step={step+1}; scaler {scale_before} -> {scaler.get_scale()}",
+                    )
                 optimizer.zero_grad(set_to_none=True)
             else:
                 grad_norm = None
@@ -356,10 +397,21 @@ def main() -> None:
                         use_ckpt,
                         precomputed_dino,
                     )
+                if not torch.isfinite(val_loss):
+                    raise RuntimeError(
+                        "Non-finite validation loss detected. "
+                        f"epoch={epoch+1} val_step={val_steps+1} val_loss={float(val_loss.detach().item())}; "
+                        f"{tensor_stats(images, 'images')}; {tensor_stats(depth_1, 'depth_1')}; "
+                        f"{tensor_stats(depth_2, 'depth_2')}; {tensor_stats(precomputed_dino, 'precomputed_dino')}"
+                    )
                 val_running += float(val_loss.detach().item())
                 val_steps += 1
 
         val_loss = val_running / max(1, val_steps)
+        if not np.isfinite(train_loss) or not np.isfinite(val_loss):
+            raise RuntimeError(
+                f"Epoch aggregate loss became non-finite at epoch={epoch+1}: train_loss={train_loss}, val_loss={val_loss}"
+            )
         scheduler.step()
 
         if run is not None and main_process:

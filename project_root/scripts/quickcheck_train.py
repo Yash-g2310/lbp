@@ -101,9 +101,16 @@ def main() -> None:
                 precomputed_dino=precomputed_dino,
             )
 
+        if not torch.isfinite(loss):
+            raise RuntimeError(
+                f"Non-finite train loss at step {i+1}: loss={float(loss.detach().item())} components={components}"
+            )
+
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+        if not torch.isfinite(grad_norm):
+            raise RuntimeError(f"Non-finite grad norm at train step {i+1}: grad_norm={float(grad_norm)}")
         scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad(set_to_none=True)
@@ -139,6 +146,10 @@ def main() -> None:
                     bottleneck_w,
                     use_ckpt=False,
                     precomputed_dino=precomputed_dino,
+                )
+            if not torch.isfinite(val_loss):
+                raise RuntimeError(
+                    f"Non-finite val loss at step {i+1}: val_loss={float(val_loss.detach().item())}"
                 )
             print(f"[val-step {i+1}] loss={float(val_loss.item()):.5f}")
 
