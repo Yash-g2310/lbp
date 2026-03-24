@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage:
 #   bash scripts/setup_server_env.sh [env_name]
 
-ENV_NAME="${1:-layered_depth}"
+ENV_NAME="${1:-monodepth}"
 PYTHON_VERSION="3.10"
 
 if ! command -v conda >/dev/null 2>&1; then
@@ -31,9 +31,9 @@ python -m pip install datasets pyyaml wandb huggingface_hub tqdm pillow numpy
 
 echo "[info] validating toolchain"
 python - <<'PY'
-import importlib
+from importlib.util import find_spec
 mods = ["torch", "datasets", "yaml", "wandb", "huggingface_hub", "torchvision", "numpy"]
-missing = [m for m in mods if importlib.util.find_spec(m) is None]
+missing = [m for m in mods if find_spec(m) is None]
 if missing:
     raise SystemExit(f"[FAIL] missing modules: {missing}")
 print("[OK] python dependencies are ready")

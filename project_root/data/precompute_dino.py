@@ -11,6 +11,7 @@ import torch
 import yaml
 from datasets import load_dataset
 import torchvision.transforms as transforms
+from tqdm import tqdm
 
 
 def parse_args() -> argparse.Namespace:
@@ -18,6 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to store shards and index")
     parser.add_argument("--shard_size", type=int, default=2048, help="Samples per shard")
+    parser.add_argument("--log_every", type=int, default=200, help="Print status every N samples")
     return parser.parse_args()
 
 
@@ -51,6 +53,7 @@ def run_split(
     output_dir: Path,
     shard_size: int,
     device: torch.device,
+    log_every: int,
 ) -> Dict[str, Dict[str, str]]:
     tfm = image_transform()
     ds = load_dataset(dataset_name, split=split, cache_dir=cache_dir, streaming=False)
@@ -59,7 +62,10 @@ def run_split(
     shard_data: Dict[str, torch.Tensor] = {}
     shard_id = 0
 
-    for i, sample in enumerate(ds):
+    total = len(ds) if hasattr(ds, "__len__") else None
+    iterator = enumerate(tqdm(ds, total=total, desc=f"Precompute {split}", unit="img"))
+
+    for i, sample in iterator:
         image_key = "image.png" if "image.png" in sample else "image"
         image = tfm(sample[image_key].convert("RGB")).unsqueeze(0).to(device)
         sample_id = get_sample_id(sample, i)
@@ -76,6 +82,7 @@ def run_split(
         if len(shard_data) >= shard_size:
             shard_path = output_dir / f"{split}_shard_{shard_id:05d}.pt"
             torch.save(shard_data, shard_path)
+            print(f"[precompute] saved shard {shard_path} with {len(shard_data)} samples", flush=True)
             for sample_key in shard_data:
                 samples_index[sample_key] = {
                     "shard_path": str(shard_path),
@@ -85,15 +92,24 @@ def run_split(
             shard_data = {}
             shard_id += 1
 
+        if log_every > 0 and (i + 1) % log_every == 0:
+            print(
+                f"[precompute] split={split} processed={i + 1}/{total if total is not None else '?'}",
+                flush=True,
+            )
+
     if shard_data:
         shard_path = output_dir / f"{split}_shard_{shard_id:05d}.pt"
         torch.save(shard_data, shard_path)
+        print(f"[precompute] saved final shard {shard_path} with {len(shard_data)} samples", flush=True)
         for sample_key in shard_data:
             samples_index[sample_key] = {
                 "shard_path": str(shard_path),
                 "feature_key": sample_key,
                 "split": split,
             }
+
+    print(f"[precompute] completed split={split}, indexed={len(samples_index)} samples", flush=True)
 
     return samples_index
 
@@ -123,12 +139,14 @@ def main() -> None:
             output_dir=out_dir,
             shard_size=args.shard_size,
             device=device,
+            log_every=args.log_every,
         )
         full_index["samples"][split_name] = part_index
 
     index_path = out_dir / "index.json"
     with index_path.open("w", encoding="utf-8") as f:
         json.dump(full_index, f)
+    print(f"[precompute] wrote index: {index_path}", flush=True)
 
 
 if __name__ == "__main__":
