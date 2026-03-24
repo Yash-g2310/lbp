@@ -141,10 +141,16 @@ class FourierUnit(nn.Module):
 
         if self.fft_mode == "pad_fp16":
             h_in, w_in = x.shape[-2:]
-            pad_h = max(0, self.fft_pad_size - h_in)
-            pad_w = max(0, self.fft_pad_size - w_in)
+
+            # Pad to the next power-of-two up to fft_pad_size so deep features
+            # (e.g. 112x112) do not require oversized reflection padding.
+            target_h = min(self.fft_pad_size, max(h_in, 1 << (max(1, h_in) - 1).bit_length()))
+            target_w = min(self.fft_pad_size, max(w_in, 1 << (max(1, w_in) - 1).bit_length()))
+            pad_h = max(0, target_h - h_in)
+            pad_w = max(0, target_w - w_in)
             if pad_h > 0 or pad_w > 0:
-                x_fft_in = F.pad(x, (0, pad_w, 0, pad_h), mode="reflect")
+                pad_mode = "reflect" if (pad_h < h_in and pad_w < w_in and h_in > 1 and w_in > 1) else "replicate"
+                x_fft_in = F.pad(x, (0, pad_w, 0, pad_h), mode=pad_mode)
             else:
                 x_fft_in = x
 
