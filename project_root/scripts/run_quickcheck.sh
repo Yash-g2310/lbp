@@ -11,7 +11,7 @@ echo "[stage 1/6] audit configs"
 "$PYTHON_BIN" scripts/audit_configs.py --configs "$CONFIG_PATH"
 
 echo "[stage 2/6] audit dataset and shards"
-"$PYTHON_BIN" scripts/audit_shards.py --config "$CONFIG_PATH" --verify-index-coverage
+"$PYTHON_BIN" scripts/audit_shards.py --config "$CONFIG_PATH" --verify-index-coverage --progress-every 1000
 
 echo "[stage 3/6] data quickcheck"
 "$PYTHON_BIN" scripts/quickcheck_data.py --config "$CONFIG_PATH"
