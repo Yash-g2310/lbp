@@ -20,6 +20,9 @@ data:
   persistent_workers: false
   batch_size: 2
   val_batch_size: 1
+  depth_scale: 1000.0
+  depth_clip_min: 1.0e-3
+  depth_clip_max: 30.0
   use_precomputed_dino: false
   precomputed_index_path: ./local_cache/features/index.json
 

@@ -26,6 +26,19 @@ transform_depth = transforms.Compose([
 ])
 
 
+def convert_depth_tensor(depth_image: Any, depth_scale: float, depth_clip_min: float, depth_clip_max: float) -> torch.Tensor:
+    """Convert raw depth image to float32 meters with optional clipping.
+
+    LayeredDepth-Syn depth images are stored as I;16 and commonly represent millimeters.
+    """
+    depth = transform_depth(depth_image).float() / max(depth_scale, 1e-12)
+    if depth_clip_max > 0:
+        depth = torch.clamp(depth, min=depth_clip_min, max=depth_clip_max)
+    else:
+        depth = torch.clamp(depth, min=depth_clip_min)
+    return depth
+
+
 def _resolve_key(sample: Dict[str, Any], candidates: tuple[str, ...], feature_name: str) -> str:
     for key in candidates:
         if key in sample:
@@ -101,11 +114,36 @@ def _extract_sample_id(sample: Dict[str, Any], index: int) -> str:
     return str(index)
 
 
+def _infer_depth_defaults(data_cfg: Dict[str, Any]) -> tuple[float, float, float]:
+    """Infer sane depth defaults from dataset names when config values are absent.
+
+    We keep LayeredDepth-Syn behavior aligned with paper/eval conventions while
+    avoiding accidental global clipping for unrelated datasets.
+    """
+    train_name = str(data_cfg.get("train_dataset_name", "")).lower()
+    val_name = str(data_cfg.get("val_dataset_name", "")).lower()
+    layered_syn = "layereddepth-syn" in train_name and "layereddepth-syn" in val_name
+    if layered_syn:
+        return 1000.0, 1e-3, 30.0
+    return 1.0, 1e-3, 0.0
+
+
 class LayeredDepthDataset(Dataset):
-    def __init__(self, hf_dataset: Any, feature_store: Optional[PrecomputedFeatureStore], split_name: str) -> None:
+    def __init__(
+        self,
+        hf_dataset: Any,
+        feature_store: Optional[PrecomputedFeatureStore],
+        split_name: str,
+        depth_scale: float,
+        depth_clip_min: float,
+        depth_clip_max: float,
+    ) -> None:
         self.ds = hf_dataset
         self.feature_store = feature_store
         self.split_name = split_name
+        self.depth_scale = depth_scale
+        self.depth_clip_min = depth_clip_min
+        self.depth_clip_max = depth_clip_max
 
     def __len__(self) -> int:
         return len(self.ds)
@@ -129,8 +167,8 @@ class LayeredDepthDataset(Dataset):
         item = {
             "sample_id": sample_id,
             "image": transform_img(sample[image_key].convert("RGB")),
-            "depth_1": transform_depth(sample[depth_1_key]),
-            "depth_2": transform_depth(sample[depth_2_key]),
+            "depth_1": convert_depth_tensor(sample[depth_1_key], self.depth_scale, self.depth_clip_min, self.depth_clip_max),
+            "depth_2": convert_depth_tensor(sample[depth_2_key], self.depth_scale, self.depth_clip_min, self.depth_clip_max),
         }
         if self.feature_store is not None:
             item["dino_features"] = self.feature_store.get(self.split_name, sample_id)
@@ -188,8 +226,29 @@ def get_dataloaders(cfg: Dict[str, Any]) -> tuple[DataLoader, DataLoader]:
         streaming=False,
     )
 
-    train_dataset = LayeredDepthDataset(train_hf, feature_store, data_cfg["train_split"])
-    val_dataset = LayeredDepthDataset(val_hf, feature_store, data_cfg["val_split"])
+    default_depth_scale, default_depth_clip_min, default_depth_clip_max = _infer_depth_defaults(data_cfg)
+    depth_scale = float(data_cfg.get("depth_scale", default_depth_scale))
+    if depth_scale <= 0:
+        raise ValueError("data.depth_scale must be > 0")
+    depth_clip_min = float(data_cfg.get("depth_clip_min", default_depth_clip_min))
+    depth_clip_max = float(data_cfg.get("depth_clip_max", default_depth_clip_max))
+
+    train_dataset = LayeredDepthDataset(
+        train_hf,
+        feature_store,
+        data_cfg["train_split"],
+        depth_scale,
+        depth_clip_min,
+        depth_clip_max,
+    )
+    val_dataset = LayeredDepthDataset(
+        val_hf,
+        feature_store,
+        data_cfg["val_split"],
+        depth_scale,
+        depth_clip_min,
+        depth_clip_max,
+    )
 
     num_workers = int(hw_cfg["num_workers"])
     persistent_workers = bool(data_cfg.get("persistent_workers", False) and num_workers > 0)

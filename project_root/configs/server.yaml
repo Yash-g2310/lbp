@@ -5,7 +5,7 @@ experiment:
 hardware:
   device: cuda
   num_workers: 4
-  compile_model: true
+  compile_model: false
   compile_mode: default
   compile_dynamic: false
   compile_no_cudagraphs: true
@@ -24,6 +24,9 @@ data:
   prefetch_factor: 1
   batch_size: 32
   val_batch_size: 2
+  depth_scale: 1000.0
+  depth_clip_min: 1.0e-3
+  depth_clip_max: 30.0
   use_precomputed_dino: true
   precomputed_index_path: /mnt/home2/home/yash_g/layered_depth/features/index.json
   precomputed_max_cached_shards: 1
