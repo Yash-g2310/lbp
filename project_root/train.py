@@ -227,12 +227,19 @@ def main() -> None:
         compile_options = dict(config["hardware"].get("compile_options", {}) or {})
         if bool(config["hardware"].get("compile_no_cudagraphs", True)):
             compile_options.setdefault("triton.cudagraphs", False)
-        model = torch.compile(
-            model,
-            mode=compile_mode,
-            dynamic=compile_dynamic,
-            options=compile_options or None,
-        )
+        # Torch 2.10 disallows passing both mode and options together.
+        if compile_options:
+            model = torch.compile(
+                model,
+                dynamic=compile_dynamic,
+                options=compile_options,
+            )
+        else:
+            model = torch.compile(
+                model,
+                mode=compile_mode,
+                dynamic=compile_dynamic,
+            )
 
     optimizer = optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
