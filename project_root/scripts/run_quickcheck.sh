@@ -24,8 +24,8 @@ QC_CKPT="$ROOT_DIR/artifacts/quickcheck/checkpoints/quickcheck/sanity_roundtrip.
 "$PYTHON_BIN" scripts/evaluate_real_tuples.py \
 	--config "$CONFIG_PATH" \
 	--checkpoint "$QC_CKPT" \
-	--split validation \
-	--layer-key layer_all \
+	--splits validation,test \
+	--layer-keys layer_all,layer_first \
 	--target-layer 1 \
 	--max-samples 20 \
 	--output "$ROOT_DIR/artifacts/quickcheck/reports/real_tuple_eval_quickcheck.json"
