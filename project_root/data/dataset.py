@@ -45,7 +45,7 @@ def _resolve_key(sample: Dict[str, Any], candidates: tuple[str, ...], feature_na
 class PrecomputedFeatureStore:
     """Loads feature tensors from sharded .pt files with sample_id lookup."""
 
-    def __init__(self, index_path: str) -> None:
+    def __init__(self, index_path: str, max_cached_shards: int = 1) -> None:
         index_file = Path(index_path)
         if not index_file.exists():
             raise FileNotFoundError(f"Precomputed feature index not found: {index_file}")
@@ -55,6 +55,15 @@ class PrecomputedFeatureStore:
 
         self.samples: Dict[str, Any] = payload["samples"]
         self._shard_cache: Dict[str, Dict[str, torch.Tensor]] = {}
+        self._cache_order: list[str] = []
+        self.max_cached_shards = max(0, int(max_cached_shards))
+
+    def _load_shard(self, shard_path: str) -> Dict[str, torch.Tensor]:
+        try:
+            return torch.load(shard_path, map_location="cpu", weights_only=True)
+        except TypeError:
+            # Backward compatibility for older torch versions without weights_only.
+            return torch.load(shard_path, map_location="cpu")
 
     def get(self, split_name: str, sample_id: str) -> torch.Tensor:
         split_samples = self.samples.get(split_name, self.samples)
@@ -65,7 +74,17 @@ class PrecomputedFeatureStore:
         shard_path = meta["shard_path"]
         feature_key = meta["feature_key"]
         if shard_path not in self._shard_cache:
-            self._shard_cache[shard_path] = torch.load(shard_path, map_location="cpu")
+            self._shard_cache[shard_path] = self._load_shard(shard_path)
+            self._cache_order.append(shard_path)
+
+            # Bound per-worker shard cache size to avoid host RAM explosions.
+            if self.max_cached_shards == 0:
+                self._shard_cache.clear()
+                self._cache_order.clear()
+            else:
+                while len(self._cache_order) > self.max_cached_shards:
+                    evict = self._cache_order.pop(0)
+                    self._shard_cache.pop(evict, None)
 
         return self._shard_cache[shard_path][feature_key].clone()
 
@@ -143,7 +162,13 @@ def get_dataloaders(cfg: Dict[str, Any]) -> tuple[DataLoader, DataLoader]:
 
     feature_store = None
     if data_cfg.get("use_precomputed_dino", False):
-        feature_store = PrecomputedFeatureStore(data_cfg["precomputed_index_path"])
+        # With multi-worker loading, each worker has its own feature store; keep
+        # shard caches small to avoid host-memory OOMs from duplicated caches.
+        max_cached_shards = int(data_cfg.get("precomputed_max_cached_shards", 1))
+        feature_store = PrecomputedFeatureStore(
+            data_cfg["precomputed_index_path"],
+            max_cached_shards=max_cached_shards,
+        )
 
     train_hf = load_dataset(
         data_cfg["train_dataset_name"],
@@ -161,26 +186,32 @@ def get_dataloaders(cfg: Dict[str, Any]) -> tuple[DataLoader, DataLoader]:
     train_dataset = LayeredDepthDataset(train_hf, feature_store, data_cfg["train_split"])
     val_dataset = LayeredDepthDataset(val_hf, feature_store, data_cfg["val_split"])
 
+    num_workers = int(hw_cfg["num_workers"])
+    persistent_workers = bool(data_cfg.get("persistent_workers", False) and num_workers > 0)
+    loader_common: Dict[str, Any] = {
+        "num_workers": num_workers,
+        "pin_memory": bool(data_cfg.get("pin_memory", True)),
+        "persistent_workers": persistent_workers,
+    }
+    if num_workers > 0:
+        loader_common["prefetch_factor"] = int(data_cfg.get("prefetch_factor", 1))
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=int(data_cfg["batch_size"]),
         collate_fn=collate_fn,
-        num_workers=int(hw_cfg["num_workers"]),
         shuffle=True,
-        pin_memory=bool(data_cfg.get("pin_memory", True)),
         drop_last=True,
-        persistent_workers=bool(data_cfg.get("persistent_workers", False) and int(hw_cfg["num_workers"]) > 0),
+        **loader_common,
     )
 
     val_loader = DataLoader(
         val_dataset,
         batch_size=int(data_cfg.get("val_batch_size", 1)),
         collate_fn=collate_fn,
-        num_workers=int(hw_cfg["num_workers"]),
         shuffle=False,
-        pin_memory=bool(data_cfg.get("pin_memory", True)),
         drop_last=False,
-        persistent_workers=bool(data_cfg.get("persistent_workers", False) and int(hw_cfg["num_workers"]) > 0),
+        **loader_common,
     )
 
     return train_loader, val_loader

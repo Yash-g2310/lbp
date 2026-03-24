@@ -4,7 +4,7 @@ experiment:
 
 hardware:
   device: cuda
-  num_workers: 8
+  num_workers: 4
   compile_model: true
   amp: true
 
@@ -17,11 +17,13 @@ data:
   staged_root: /mnt/home2/home/yash_g/layered_depth
   require_local_staging: true
   pin_memory: true
-  persistent_workers: true
+  persistent_workers: false
+  prefetch_factor: 1
   batch_size: 32
   val_batch_size: 2
   use_precomputed_dino: true
   precomputed_index_path: /mnt/home2/home/yash_g/layered_depth/features/index.json
+  precomputed_max_cached_shards: 1
 
 architecture:
   strategy: concat
