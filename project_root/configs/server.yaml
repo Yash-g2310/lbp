@@ -16,7 +16,7 @@ data:
   cache_dir: /mnt/home2/home/yash_g/.cache/huggingface/datasets
   staged_root: /mnt/home2/home/yash_g/layered_depth
   require_local_staging: true
-  pin_memory: true
+  pin_memory: false
   persistent_workers: false
   prefetch_factor: 1
   batch_size: 32
