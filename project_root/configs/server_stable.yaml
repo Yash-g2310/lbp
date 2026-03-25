@@ -46,6 +46,7 @@ training:
   auto_disable_amp_on_overflow: true
   amp_overflow_patience: 8
   amp_disable_scale_threshold: 128.0
+  max_consecutive_nonfinite_steps: 4
   learning_rate: 1.0e-4
   weight_decay: 1.0e-2
   grad_clip_norm: 1.0
@@ -63,7 +64,7 @@ training:
     midpoint_fraction: 0.5
     decoder_weight: 0.5
     bottleneck_weight: 0.25
-    min_decay: 0.0
+    min_decay: 0.1
 
 logging:
   use_wandb: true

@@ -108,9 +108,35 @@ def curriculum_weights(epoch: int, total_epochs: int, cfg: Dict[str, Any]) -> Tu
 
     tail_len = max(1, total_epochs - midpoint - 1)
     progress = (epoch - midpoint) / tail_len
-    min_decay = float(cur_cfg.get("min_decay", 0.0))
+    min_decay = float(cur_cfg.get("min_decay", 0.1))
+    if min_decay <= 0:
+        raise ValueError(f"training.curriculum.min_decay must be > 0, got {min_decay}")
     decay = max(min_decay, 1.0 - progress)
     return float(cur_cfg["decoder_weight"]) * decay, float(cur_cfg["bottleneck_weight"]) * decay
+
+
+def validate_component_losses(components: Dict[str, float], epoch: int, step: int, eps: float = 1e-10) -> None:
+    bad: list[str] = []
+    all_tiny = True
+    for key, val in components.items():
+        if not np.isfinite(val):
+            bad.append(f"{key}=non-finite")
+            continue
+        if val > eps:
+            all_tiny = False
+        if val < 0:
+            bad.append(f"{key}={val}")
+    if bad:
+        raise RuntimeError(
+            "Invalid component losses detected: "
+            + ", ".join(bad)
+            + f" (epoch={epoch+1} step={step+1})"
+        )
+    if all_tiny:
+        raise RuntimeError(
+            "All component losses are near-zero; training likely collapsed. "
+            f"epoch={epoch+1} step={step+1} components={components}"
+        )
 
 
 def compute_multistage_loss(
@@ -392,11 +418,13 @@ def main() -> None:
     amp_overflow_patience = int(config["training"].get("amp_overflow_patience", 8))
     amp_disable_scale_threshold = float(config["training"].get("amp_disable_scale_threshold", 128.0))
     skip_nonfinite_grad_step = bool(config["training"].get("skip_nonfinite_grad_step", True))
+    max_consecutive_nonfinite_steps = int(config["training"].get("max_consecutive_nonfinite_steps", 4))
     grad_clip_norm = float(config["training"].get("grad_clip_norm", 1.0))
     global_step = start_epoch * max(1, len(train_loader))
     amp_runtime_enabled = amp_enabled
     amp_runtime_dtype = amp_dtype
     consecutive_amp_overflows = 0
+    consecutive_nonfinite_steps = 0
 
     log_terminal(
         log_to_terminal,
@@ -544,6 +572,7 @@ def main() -> None:
                     components["l1_fp32_retry"] = 1.0
                 if loss2_recovered:
                     components["l2_fp32_retry"] = 1.0
+                validate_component_losses(components, epoch, step)
             else:
                 amp_ctx = (
                     torch.autocast(device_type="cuda", enabled=amp_runtime_enabled, dtype=amp_runtime_dtype)
@@ -575,6 +604,7 @@ def main() -> None:
                     )
 
                 scaler.scale(scaled_loss).backward()
+                validate_component_losses(components, epoch, step)
 
             should_step = ((step + 1) % accum_steps == 0) or ((step + 1) == len(train_loader))
             if should_step:
@@ -582,22 +612,31 @@ def main() -> None:
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm * accum_steps)
                 skip_step = False
                 if not torch.isfinite(grad_norm):
-                    if amp_runtime_enabled:
+                    if amp_scaler_enabled and amp_runtime_enabled:
                         log_terminal(
                             log_to_terminal,
                             f"[warn] non-finite grad_norm at epoch={epoch+1} step={step+1}; "
                             "allowing GradScaler to handle overflow/skip",
                         )
+                        consecutive_nonfinite_steps += 1
                     elif skip_nonfinite_grad_step:
                         log_terminal(
                             log_to_terminal,
                             f"[warn] non-finite grad_norm at epoch={epoch+1} step={step+1}; skipping optimizer step",
                         )
                         skip_step = True
+                        consecutive_nonfinite_steps += 1
                     else:
                         raise RuntimeError(
                             f"Non-finite gradient norm detected at epoch={epoch+1} step={step+1}: grad_norm={float(grad_norm)}"
                         )
+                    if consecutive_nonfinite_steps >= max(1, max_consecutive_nonfinite_steps):
+                        raise RuntimeError(
+                            "Repeated non-finite grad_norm events detected; aborting to avoid silent training collapse. "
+                            f"count={consecutive_nonfinite_steps} epoch={epoch+1} step={step+1}"
+                        )
+                else:
+                    consecutive_nonfinite_steps = 0
 
                 if not skip_step:
                     scale_before = scaler.get_scale()

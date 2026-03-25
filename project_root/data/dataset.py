@@ -73,15 +73,33 @@ class PrecomputedFeatureStore:
 
     def _load_shard(self, shard_path: str) -> Dict[str, torch.Tensor]:
         try:
-            return torch.load(shard_path, map_location="cpu", weights_only=True)
+            shard = torch.load(shard_path, map_location="cpu", weights_only=True)
         except TypeError:
             # Backward compatibility for older torch versions without weights_only.
             try:
-                return torch.load(shard_path, map_location="cpu")
+                shard = torch.load(shard_path, map_location="cpu")
             except Exception as exc:
                 raise RuntimeError(f"Failed to load precomputed shard '{shard_path}': {exc}") from exc
         except Exception as exc:
             raise RuntimeError(f"Failed to load precomputed shard '{shard_path}': {exc}") from exc
+
+        if not isinstance(shard, dict):
+            raise RuntimeError(f"Precomputed shard '{shard_path}' must contain a dict, got {type(shard)}")
+
+        for key, tensor in shard.items():
+            if not torch.is_tensor(tensor):
+                raise RuntimeError(f"Shard '{shard_path}' key '{key}' is not a tensor: {type(tensor)}")
+            if tensor.numel() == 0:
+                raise RuntimeError(f"Shard '{shard_path}' key '{key}' is empty")
+            non_finite = int((~torch.isfinite(tensor)).sum().item())
+            if non_finite > 0:
+                raise RuntimeError(
+                    f"Shard '{shard_path}' key '{key}' has non-finite values: {non_finite}/{tensor.numel()}"
+                )
+            if bool(torch.all(tensor == 0)):
+                raise RuntimeError(f"Shard '{shard_path}' key '{key}' is all zeros (corrupted feature cache)")
+
+        return shard
 
     def get(self, split_name: str, sample_id: str) -> torch.Tensor:
         split_samples = self.samples.get(split_name, self.samples)
