@@ -159,19 +159,27 @@ class FourierUnit(nn.Module):
             else:
                 x_fft_in = x
 
-            amp_ctx = autocast('cuda', enabled=True) if x_fft_in.is_cuda else nullcontext()
-            with amp_ctx:
+            # Keep FFT compute on supported reduced precision under global AMP.
+            # rfftn does not accept bf16 on some CUDA stacks.
+            fft_in = x_fft_in.to(torch.float16) if x_fft_in.is_cuda and x_fft_in.dtype == torch.bfloat16 else x_fft_in
+            fft_ctx = autocast('cuda', enabled=False) if fft_in.is_cuda else nullcontext()
+            with fft_ctx:
                 with warnings.catch_warnings():
                     warnings.filterwarnings(
                         "ignore",
                         message="ComplexHalf support is experimental",
                         category=UserWarning,
                     )
-                    ffted = torch.fft.rfftn(x_fft_in, dim=(-2, -1), norm='ortho')
+                    try:
+                        ffted = torch.fft.rfftn(fft_in, dim=(-2, -1), norm='ortho')
+                    except RuntimeError as exc:
+                        if "Unsupported dtype" not in str(exc):
+                            raise
+                        ffted = torch.fft.rfftn(fft_in.to(torch.float32), dim=(-2, -1), norm='ortho')
                 h_fft, w_fft = ffted.shape[-2:]
-                # Keep pad_fp16 in reduced precision to control memory footprint.
+                # Keep pad_fp16 in reduced precision where possible to control memory footprint.
                 ffted = self._frequency_conv(ffted, h_fft, w_fft)
-                output = torch.fft.irfftn(ffted, s=x_fft_in.shape[-2:], dim=(-2, -1), norm='ortho')
+                output = torch.fft.irfftn(ffted, s=fft_in.shape[-2:], dim=(-2, -1), norm='ortho')
 
             output = output[..., :h_in, :w_in]
         else:
