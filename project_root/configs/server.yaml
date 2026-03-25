@@ -11,6 +11,7 @@ hardware:
   compile_no_cudagraphs: true
   amp: true
   amp_dtype: bfloat16
+  force_fp32_impl: false
 
 data:
   train_dataset_name: princeton-vl/LayeredDepth-Syn
@@ -23,7 +24,7 @@ data:
   pin_memory: false
   persistent_workers: false
   prefetch_factor: 1
-  batch_size: 24
+  batch_size: 12
   val_batch_size: 1
   depth_scale: 1000.0
   depth_clip_min: 1.0e-3

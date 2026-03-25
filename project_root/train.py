@@ -370,14 +370,16 @@ def main() -> None:
 
     set_seed(int(config["experiment"]["seed"]))
     device = torch.device("cuda" if torch.cuda.is_available() and config["hardware"]["device"] == "cuda" else "cpu")
-    amp_enabled = bool(config["hardware"].get("amp", True)) and device.type == "cuda"
-    amp_dtype = resolve_amp_dtype(config["hardware"], device) if amp_enabled else torch.float16
+    force_fp32_impl = bool(config["hardware"].get("force_fp32_impl", False))
+    amp_enabled = (not force_fp32_impl) and bool(config["hardware"].get("amp", True)) and device.type == "cuda"
+    amp_dtype = resolve_amp_dtype(config["hardware"], device) if amp_enabled else torch.float32
     amp_scaler_enabled = amp_enabled and amp_dtype == torch.float16
     main_process = is_main_process()
     log_cfg = config.get("logging", {})
     log_to_terminal = bool(log_cfg.get("log_to_terminal", True))
     verbose_components = bool(log_cfg.get("verbose_components", True))
 
+    fft_mode = "fp32" if force_fp32_impl else config["architecture"]["fft_mode"]
     model = DINOSFIN_Architecture_NEW(
         strategy=config["architecture"]["strategy"],
         base_channels=int(config["architecture"]["base_channels"]),
@@ -385,7 +387,7 @@ def main() -> None:
         num_rhag=int(config["architecture"]["num_rhag"]),
         window_size=int(config["architecture"]["window_size"]),
         dino_embed_dim=int(config["architecture"]["dino_embed_dim"]),
-        fft_mode=config["architecture"]["fft_mode"],
+        fft_mode=fft_mode,
         fft_pad_size=int(config["architecture"]["fft_pad_size"]),
         use_precomputed_dino=bool(config["data"]["use_precomputed_dino"]),
     ).to(device)
@@ -455,6 +457,7 @@ def main() -> None:
         (
             f"[train] device={device.type} amp={amp_enabled} compile={bool(config['hardware'].get('compile_model', False))} "
             f"amp_dtype={str(amp_dtype).replace('torch.', '')} "
+            f"force_fp32_impl={force_fp32_impl} fft_mode={fft_mode} "
             f"precomputed_dino={bool(config['data'].get('use_precomputed_dino', False))} start_epoch={start_epoch}"
         ),
     )

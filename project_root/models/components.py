@@ -143,6 +143,23 @@ class FourierUnit(nn.Module):
     @_dynamo_disable
     def forward(self, x):
         orig_dtype = x.dtype
+        if not torch.isfinite(x).all():
+            finite_count = int(torch.isfinite(x).sum().item())
+            total = int(x.numel())
+            raise RuntimeError(
+                "FourierUnit received non-finite input. "
+                f"mode={self.fft_mode} input_dtype={orig_dtype} finite={finite_count}/{total} shape={tuple(x.shape)}"
+            )
+
+        def _run_fp32_fft(x_in: torch.Tensor, spatial_shape: tuple[int, int]) -> torch.Tensor:
+            x_float = x_in.to(torch.float32)
+            fp32_ctx = autocast('cuda', enabled=False) if x_float.is_cuda else nullcontext()
+            with fp32_ctx:
+                ffted_local = torch.fft.rfftn(x_float, dim=(-2, -1), norm='ortho')
+                h_local, w_local = ffted_local.shape[-2:]
+                ffted_local = self._frequency_conv(ffted_local, h_local, w_local)
+                out_local = torch.fft.irfftn(ffted_local, s=spatial_shape, dim=(-2, -1), norm='ortho')
+            return out_local
 
         if self.fft_mode == "pad_fp16":
             h_in, w_in = x.shape[-2:]
@@ -181,16 +198,18 @@ class FourierUnit(nn.Module):
                 ffted = self._frequency_conv(ffted, h_fft, w_fft)
                 output = torch.fft.irfftn(ffted, s=fft_in.shape[-2:], dim=(-2, -1), norm='ortho')
 
+            if not torch.isfinite(output).all():
+                # Recover from unstable reduced-precision frequency path.
+                warnings.warn(
+                    "FourierUnit pad_fp16 produced non-finite output; retrying FFT path in fp32",
+                    RuntimeWarning,
+                )
+                output = _run_fp32_fft(x_fft_in, x_fft_in.shape[-2:])
+
             output = output[..., :h_in, :w_in]
         else:
             # Fallback path for numerical stability across hardware.
-            x_float = x.to(torch.float32)
-            amp_ctx = autocast('cuda', enabled=False) if x_float.is_cuda else nullcontext()
-            with amp_ctx:
-                ffted = torch.fft.rfftn(x_float, dim=(-2, -1), norm='ortho')
-                h_fft, w_fft = ffted.shape[-2:]
-                ffted = self._frequency_conv(ffted, h_fft, w_fft)
-                output = torch.fft.irfftn(ffted, s=x.shape[-2:], dim=(-2, -1), norm='ortho')
+            output = _run_fp32_fft(x, x.shape[-2:])
 
         if not torch.isfinite(output).all():
             finite_count = int(torch.isfinite(output).sum().item())
