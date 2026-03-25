@@ -85,6 +85,25 @@ def tensor_stats(x: torch.Tensor | None, name: str) -> str:
         )
 
 
+def validate_stage_outputs(
+    outputs: Dict[str, torch.Tensor],
+    stage_name: str,
+    epoch: int | None = None,
+    step: int | None = None,
+) -> None:
+    for key in ("bottleneck", "decoder", "final"):
+        out = outputs.get(key)
+        if out is None:
+            raise RuntimeError(f"Missing model output '{key}' in stage '{stage_name}'")
+        if not torch.isfinite(out).all():
+            ctx = ""
+            if epoch is not None and step is not None:
+                ctx = f" epoch={epoch+1} step={step+1}"
+            raise RuntimeError(
+                f"Non-finite model output detected at {stage_name}.{key}{ctx}; {tensor_stats(out, f'{stage_name}.{key}') }"
+            )
+
+
 def build_scheduler(optimizer: torch.optim.Optimizer, cfg: Dict[str, Any]):
     sched_cfg = cfg["training"]["scheduler"]
     name = sched_cfg["name"].lower()
@@ -165,6 +184,9 @@ def compute_multistage_loss(
         precomputed_dino=precomputed_dino,
     )
 
+    validate_stage_outputs(out1, "l1")
+    validate_stage_outputs(out2, "l2")
+
     l1_b = criterion(out1["bottleneck"], depth_1)
     l1_d = criterion(out1["decoder"], depth_1)
     l1_f = criterion(out1["final"], depth_1)
@@ -210,6 +232,8 @@ def compute_single_stage_loss(
         use_checkpointing=use_ckpt,
         precomputed_dino=precomputed_dino,
     )
+
+    validate_stage_outputs(out, prefix)
 
     l_b = criterion(out["bottleneck"], depth)
     l_d = criterion(out["decoder"], depth)

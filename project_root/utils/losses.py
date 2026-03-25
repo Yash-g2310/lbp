@@ -29,9 +29,13 @@ class SILogLoss(nn.Module):
         if finite_mask.sum() == 0:
             invalid_pred_cnt = int((~torch.isfinite(pred_valid)).sum().item())
             invalid_tgt_cnt = int((~torch.isfinite(tgt_valid)).sum().item())
+            pred_total = int(pred_valid.numel())
+            tgt_total = int(tgt_valid.numel())
             raise RuntimeError(
                 "SILogLoss finite filtering removed all samples. "
-                f"invalid_pred={invalid_pred_cnt} invalid_target={invalid_tgt_cnt}"
+                f"invalid_pred={invalid_pred_cnt}/{pred_total} invalid_target={invalid_tgt_cnt}/{tgt_total} "
+                f"pred_finite_before_filter={int(torch.isfinite(pred_valid).sum().item())} "
+                f"target_finite_before_filter={int(torch.isfinite(tgt_valid).sum().item())}"
             )
         pred_valid = pred_valid[finite_mask]
         tgt_valid = tgt_valid[finite_mask]

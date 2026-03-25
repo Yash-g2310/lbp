@@ -49,4 +49,9 @@ PY
 
 "$PYTHON_BIN" scripts/preflight_server.py --config "$CONFIG_PATH" --sbatch "$ROOT_DIR/slurm/train_server.sbatch"
 "$PYTHON_BIN" scripts/server_env_doctor.py --config "$CONFIG_PATH"
+
+echo "[cmd] $PYTHON_BIN scripts/smoke_one_batch.py --config $CONFIG_PATH --max-batch-size ${PRECHECK_MAX_BATCH:-1}"
+"$PYTHON_BIN" scripts/smoke_one_batch.py --config "$CONFIG_PATH" --max-batch-size "${PRECHECK_MAX_BATCH:-1}"
+echo "[OK] one-batch precheck passed"
+
 "$PYTHON_BIN" scripts/train_and_eval.py --config "$CONFIG_PATH" --python "$PYTHON_BIN"

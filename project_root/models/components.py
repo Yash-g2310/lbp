@@ -192,6 +192,15 @@ class FourierUnit(nn.Module):
                 ffted = self._frequency_conv(ffted, h_fft, w_fft)
                 output = torch.fft.irfftn(ffted, s=x.shape[-2:], dim=(-2, -1), norm='ortho')
 
+        if not torch.isfinite(output).all():
+            finite_count = int(torch.isfinite(output).sum().item())
+            total = int(output.numel())
+            raise RuntimeError(
+                "FourierUnit produced non-finite output. "
+                f"mode={self.fft_mode} input_dtype={orig_dtype} output_dtype={output.dtype} "
+                f"finite={finite_count}/{total} shape={tuple(output.shape)}"
+            )
+
         return output.to(orig_dtype)
 
 class SpectralTransform(nn.Module):
