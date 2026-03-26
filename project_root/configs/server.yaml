@@ -9,9 +9,9 @@ hardware:
   compile_mode: default
   compile_dynamic: false
   compile_no_cudagraphs: true
-  amp: true
+  amp: false
   amp_dtype: bfloat16
-  force_fp32_impl: false
+  force_fp32_impl: true
 
 data:
   train_dataset_name: princeton-vl/LayeredDepth-Syn
@@ -39,8 +39,8 @@ architecture:
   num_sfin: 2
   num_rhag: 3
   window_size: 7
-  use_gradient_checkpointing: true
-  fft_mode: pad_fp16
+  use_gradient_checkpointing: false
+  fft_mode: fp32
   fft_pad_size: 256
   dino_embed_dim: 384
 
@@ -57,7 +57,7 @@ training:
   max_consecutive_nonfinite_steps: 4
   learning_rate: 1.0e-4
   weight_decay: 1.0e-2
-  grad_clip_norm: 1.0
+  grad_clip_norm: 5.0
   scheduler:
     name: cosine
     t_max_epochs: 100

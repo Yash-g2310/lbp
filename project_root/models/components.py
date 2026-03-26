@@ -143,13 +143,36 @@ class FourierUnit(nn.Module):
     @_dynamo_disable
     def forward(self, x):
         orig_dtype = x.dtype
+        # If input contains non-finite values in reduced precision (bf16/fp16),
+        # attempt a recovery by casting to float32 and continue. Otherwise
+        # raise with diagnostic counts.
         if not torch.isfinite(x).all():
-            finite_count = int(torch.isfinite(x).sum().item())
-            total = int(x.numel())
-            raise RuntimeError(
-                "FourierUnit received non-finite input. "
-                f"mode={self.fft_mode} input_dtype={orig_dtype} finite={finite_count}/{total} shape={tuple(x.shape)}"
-            )
+            if x.is_floating_point() and x.dtype in (torch.bfloat16, torch.float16):
+                x32 = x.to(torch.float32)
+                if torch.isfinite(x32).all():
+                    warnings.warn(
+                        "FourierUnit: non-finite input detected in reduced precision; casting input to float32 for stability",
+                        RuntimeWarning,
+                    )
+                    x = x32
+                else:
+                    finite_count = int(torch.isfinite(x32).sum().item())
+                    total = int(x32.numel())
+                    nan_count = int(torch.isnan(x32).sum().item())
+                    inf_count = int(torch.isinf(x32).sum().item())
+                    raise RuntimeError(
+                        "FourierUnit received non-finite input even after casting to float32. "
+                        f"mode={self.fft_mode} input_dtype={orig_dtype} finite={finite_count}/{total} nan={nan_count} inf={inf_count} shape={tuple(x32.shape)}"
+                    )
+            else:
+                finite_count = int(torch.isfinite(x).sum().item())
+                total = int(x.numel())
+                nan_count = int(torch.isnan(x).sum().item())
+                inf_count = int(torch.isinf(x).sum().item())
+                raise RuntimeError(
+                    "FourierUnit received non-finite input. "
+                    f"mode={self.fft_mode} input_dtype={orig_dtype} finite={finite_count}/{total} nan={nan_count} inf={inf_count} shape={tuple(x.shape)}"
+                )
 
         def _run_fp32_fft(x_in: torch.Tensor, spatial_shape: tuple[int, int]) -> torch.Tensor:
             x_float = x_in.to(torch.float32)
@@ -229,7 +252,41 @@ class SpectralTransform(nn.Module):
         self.fu = FourierUnit(channels // 2, channels // 2, fft_mode=fft_mode, fft_pad_size=fft_pad_size)
         self.conv2 = nn.Conv2d(channels, channels // 2, 3, 1, 1)
     def forward(self, x):
-        return self.conv2(torch.cat([x, self.fu(self.conv1(x))], dim=1))
+        # Quick parameter finiteness checks to catch corrupted weights/biases.
+        w = self.conv1.weight
+        if not torch.isfinite(w).all():
+            finite_count = int(torch.isfinite(w).sum().item())
+            total = int(w.numel())
+            nan_count = int(torch.isnan(w).sum().item())
+            inf_count = int(torch.isinf(w).sum().item())
+            raise RuntimeError(
+                "SpectralTransform.conv1 weight contains non-finite values. "
+                f"finite={finite_count}/{total} nan={nan_count} inf={inf_count} shape={tuple(w.shape)} dtype={w.dtype}"
+            )
+        if self.conv1.bias is not None:
+            b = self.conv1.bias
+            if not torch.isfinite(b).all():
+                finite_count = int(torch.isfinite(b).sum().item())
+                total = int(b.numel())
+                nan_count = int(torch.isnan(b).sum().item())
+                inf_count = int(torch.isinf(b).sum().item())
+                raise RuntimeError(
+                    "SpectralTransform.conv1 bias contains non-finite values. "
+                    f"finite={finite_count}/{total} nan={nan_count} inf={inf_count} shape={tuple(b.shape)} dtype={b.dtype}"
+                )
+
+        # Protect against upstream NaNs by checking activations immediately after conv1.
+        x1 = self.conv1(x)
+        if not torch.isfinite(x1).all():
+            finite_count = int(torch.isfinite(x1).sum().item())
+            total = int(x1.numel())
+            nan_count = int(torch.isnan(x1).sum().item())
+            inf_count = int(torch.isinf(x1).sum().item())
+            raise RuntimeError(
+                "SpectralTransform.conv1 produced non-finite activations. "
+                f"finite={finite_count}/{total} nan={nan_count} inf={inf_count} shape={tuple(x1.shape)} dtype={x1.dtype}"
+            )
+        return self.conv2(torch.cat([x, self.fu(x1)], dim=1))
 
 class FFC(nn.Module):
     def __init__(self, channels, fft_mode="fp32", fft_pad_size=256):
@@ -239,7 +296,7 @@ class FFC(nn.Module):
         self.convg2l = nn.Conv2d(channels // 2, channels // 2, 3, 1, 1)
         self.convg2g = SpectralTransform(channels, fft_mode=fft_mode, fft_pad_size=fft_pad_size)
     def forward(self, x):
-        x_l, x_g = x if isinstance(x, tuple) else (x, 0)
+        x_l, x_g = x if isinstance(x, tuple) else (x, torch.zeros_like(x))
         return self.convl2l(x_l) + self.convg2l(x_g), self.convl2g(x_l) + self.convg2g(x_g)
 
 class SFIB(nn.Module):

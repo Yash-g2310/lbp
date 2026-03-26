@@ -225,6 +225,18 @@ def compute_single_stage_loss(
     target_layer: int,
     prefix: str,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
+    # Quick runtime checks for NaNs/Infs in inputs to help trace upstream data issues.
+    img_stats = tensor_stats(images, "images")
+    depth_stats = tensor_stats(depth, "depth")
+    dino_stats = tensor_stats(precomputed_dino, "precomputed_dino")
+    if "finite=0/" in img_stats or "finite=0/" in depth_stats or "finite=0/" in dino_stats:
+        raise RuntimeError(
+            "Detected non-finite inputs before model forward: "
+            f"{img_stats}; {depth_stats}; {dino_stats}"
+        )
+
+    # Log a brief summary to terminal for immediate visibility when verbose logging is enabled.
+    log_terminal(True, f"[debug] input stats: {img_stats}; {depth_stats}; {dino_stats}")
     out = model(
         images,
         target_layer=target_layer,
@@ -359,6 +371,36 @@ def maybe_resume(
     optimizer.load_state_dict(checkpoint[opt_key])
     scheduler.load_state_dict(checkpoint[sch_key])
     scaler.load_state_dict(checkpoint[sca_key])
+
+    # Immediate finiteness checks to detect corrupted checkpoints early.
+    for n, p in model.named_parameters():
+        if not torch.isfinite(p).all():
+            torch.save({
+                'checkpoint_path': str(path),
+                'bad_param': n,
+                'model_state': checkpoint.get(model_key),
+                'optimizer_state': checkpoint.get(opt_key),
+            }, 'nan_dbg_loaded_ckpt.pt')
+            raise RuntimeError(
+                f"Loaded checkpoint {path} contains non-finite parameter {n}; saved nan_dbg_loaded_ckpt.pt"
+            )
+    try:
+        for p in optimizer.state.keys():
+            st = optimizer.state[p]
+            for k, v in st.items():
+                if isinstance(v, torch.Tensor) and not torch.isfinite(v).all():
+                    torch.save({
+                        'checkpoint_path': str(path),
+                        'bad_opt_buffer': k,
+                        'model_state': checkpoint.get(model_key),
+                        'optimizer_state': checkpoint.get(opt_key),
+                    }, 'nan_dbg_loaded_ckpt_optbuf.pt')
+                    raise RuntimeError(
+                        f"Loaded checkpoint {path} contains non-finite optimizer buffer {k}; saved nan_dbg_loaded_ckpt_optbuf.pt"
+                    )
+    except Exception:
+        # Non-fatal if optimizer state structure is unexpected; we only want to avoid masking real errors.
+        pass
 
     best_val = checkpoint.get("best_val_loss", checkpoint.get("best_loss", float("inf")))
     return int(checkpoint["epoch"]) + 1, float(best_val)
@@ -636,6 +678,18 @@ def main() -> None:
             should_step = ((step + 1) % accum_steps == 0) or ((step + 1) == len(train_loader))
             if should_step:
                 scaler.unscale_(optimizer)
+                # Debug probe: detect non-finite gradients before clipping/step.
+                for n, p in model.named_parameters():
+                    if p.grad is not None and not torch.isfinite(p.grad).all():
+                        torch.save({
+                            'epoch': epoch,
+                            'step': step,
+                            'global_step': global_step,
+                            'bad_param': n,
+                            'model_state': model.state_dict(),
+                            'optimizer_state': optimizer.state_dict(),
+                        }, 'nan_dbg_grad.pt')
+                        raise RuntimeError(f"NaN gradient detected for param {n} at epoch={epoch+1} step={step+1}")
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm * accum_steps)
                 skip_step = False
                 if not torch.isfinite(grad_norm):
@@ -669,6 +723,37 @@ def main() -> None:
                     scale_before = scaler.get_scale()
                     scaler.step(optimizer)
                     scaler.update()
+                    # Debug probe: detect non-finite parameters or optimizer buffers right after the update.
+                    for n, p in model.named_parameters():
+                        if not torch.isfinite(p).all():
+                            torch.save({
+                                'epoch': epoch,
+                                'step': step,
+                                'global_step': global_step,
+                                'bad_param': n,
+                                'model_state': model.state_dict(),
+                                'optimizer_state': optimizer.state_dict(),
+                            }, 'nan_dbg_param.pt')
+                            raise RuntimeError(f"NaN parameter {n} after optimizer.step() at epoch={epoch+1} step={step+1}")
+                    # Check common optimizer buffers (e.g., Adam exp_avg/exp_avg_sq)
+                    try:
+                        for p in list(optimizer.state.keys()):
+                            st = optimizer.state[p]
+                            for k, v in st.items():
+                                if isinstance(v, torch.Tensor):
+                                    if not torch.isfinite(v).all():
+                                        torch.save({
+                                            'epoch': epoch,
+                                            'step': step,
+                                            'global_step': global_step,
+                                            'bad_opt_buffer': k,
+                                            'model_state': model.state_dict(),
+                                            'optimizer_state': optimizer.state_dict(),
+                                        }, 'nan_dbg_optbuf.pt')
+                                        raise RuntimeError(f"NaN optimizer buffer {k} after optimizer.step() at epoch={epoch+1} step={step+1}")
+                    except Exception:
+                        # Avoid crashing the debugger probe itself in unusual optimizer implementations.
+                        pass
                     scale_after = scaler.get_scale()
                     if amp_scaler_enabled and amp_runtime_enabled and scale_after < scale_before:
                         consecutive_amp_overflows += 1
