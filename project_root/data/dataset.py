@@ -21,7 +21,8 @@ transform_img = transforms.Compose([
 ])
 
 transform_depth = transforms.Compose([
-    transforms.Resize((224, 224)),
+    # Use nearest for depth to avoid blending valid and invalid pixels.
+    transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.NEAREST, antialias=False),
     transforms.ToTensor()
 ])
 
@@ -32,11 +33,16 @@ def convert_depth_tensor(depth_image: Any, depth_scale: float, depth_clip_min: f
     LayeredDepth-Syn depth images are stored as I;16 and commonly represent millimeters.
     """
     depth = transform_depth(depth_image).float() / max(depth_scale, 1e-12)
-    if depth_clip_max > 0:
-        depth = torch.clamp(depth, min=depth_clip_min, max=depth_clip_max)
-    else:
-        depth = torch.clamp(depth, min=depth_clip_min)
-    return depth
+
+    # Preserve invalid pixels (zeros / non-finite) as zeros instead of raising them to clip_min.
+    valid = torch.isfinite(depth) & (depth > 0)
+    depth_out = torch.zeros_like(depth)
+    if valid.any():
+        if depth_clip_max > 0:
+            depth_out[valid] = torch.clamp(depth[valid], min=depth_clip_min, max=depth_clip_max)
+        else:
+            depth_out[valid] = torch.clamp(depth[valid], min=depth_clip_min)
+    return depth_out
 
 
 def _resolve_key(sample: Dict[str, Any], candidates: tuple[str, ...], feature_name: str) -> str:
@@ -102,7 +108,25 @@ class PrecomputedFeatureStore:
         return shard
 
     def get(self, split_name: str, sample_id: str) -> torch.Tensor:
-        split_samples = self.samples.get(split_name, self.samples)
+        # Support both split-scoped index payloads ({"train": {...}, "validation": {...}})
+        # and flat payloads ({sample_id: meta, ...}). Never silently fall back across splits.
+        first_val = next(iter(self.samples.values()), None)
+        is_flat_payload = bool(
+            isinstance(first_val, dict)
+            and "shard_path" in first_val
+            and "feature_key" in first_val
+        )
+
+        if split_name in self.samples:
+            split_samples = self.samples[split_name]
+        elif is_flat_payload:
+            split_samples = self.samples
+        else:
+            available_splits = ", ".join(sorted(str(k) for k in self.samples.keys()))
+            raise KeyError(
+                f"split '{split_name}' not found in feature index. Available splits: [{available_splits}]"
+            )
+
         meta = split_samples.get(str(sample_id))
         if meta is None:
             raise KeyError(f"sample_id '{sample_id}' not found in feature index for split '{split_name}'")

@@ -322,7 +322,7 @@ class SFINResBlock(nn.Module):
         return torch.cat((id_l + x_l, id_g + x_g), dim=1)
 
 class SFINBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, num_blocks=2, fft_mode="fp32", fft_pad_size=256):
+    def __init__(self, in_channels, out_channels, num_blocks=2, fft_mode="fp32", fft_pad_size=256, drop_prob: float = 0.1):
         super().__init__()
         self.input_conv = nn.Conv2d(in_channels, out_channels, 3, 1, 1)
         self.blocks = nn.Sequential(
@@ -332,9 +332,12 @@ class SFINBlock(nn.Module):
             ]
         )
         self.output_conv = nn.Conv2d(out_channels, out_channels, 3, 1, 1)
+        # Spatial dropout to help regularize convolutional features
+        self.dropout = nn.Dropout2d(p=drop_prob) if drop_prob > 0.0 else nn.Identity()
+
     def forward(self, x):
         x = self.input_conv(x)
-        return self.output_conv(self.blocks(x) + x)
+        return self.output_conv(self.dropout(self.blocks(x) + x))
 
 # ==========================================
 # 3. ATTENTION GATE 

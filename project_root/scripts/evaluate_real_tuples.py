@@ -19,6 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from data.dataset import PrecomputedFeatureStore, _extract_sample_id
+
 from models.wrapper import DINOSFIN_Architecture_NEW
 from utils.metrics import evaluate_tuple_sample, merge_tuple_counts, summarize_tuple_counts
 
@@ -33,6 +35,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--layer-key", default="", help="Single tuple layer key override")
     p.add_argument("--layer-keys", default="", help="Comma-separated layer keys, e.g. layer_all,layer_first")
     p.add_argument("--target-layer", type=int, default=-1, help="Model target layer override")
+    p.add_argument(
+        "--use-precomputed-dino",
+        action="store_true",
+        help="Use cached DINO features for real eval (default: disabled)",
+    )
+    p.add_argument(
+        "--precomputed-index-path",
+        default="",
+        help="Override precomputed feature index path for real eval",
+    )
     p.add_argument("--output", required=True, help="Output JSON path")
     return p.parse_args()
 
@@ -45,7 +57,7 @@ def load_yaml(path: str) -> Dict[str, Any]:
     return cfg
 
 
-def build_model(cfg: Dict[str, Any], device: torch.device) -> torch.nn.Module:
+def build_model(cfg: Dict[str, Any], device: torch.device, use_precomputed_dino: bool) -> torch.nn.Module:
     model = DINOSFIN_Architecture_NEW(
         strategy=cfg["architecture"]["strategy"],
         base_channels=int(cfg["architecture"]["base_channels"]),
@@ -55,7 +67,7 @@ def build_model(cfg: Dict[str, Any], device: torch.device) -> torch.nn.Module:
         dino_embed_dim=int(cfg["architecture"]["dino_embed_dim"]),
         fft_mode=cfg["architecture"]["fft_mode"],
         fft_pad_size=int(cfg["architecture"]["fft_pad_size"]),
-        use_precomputed_dino=False,
+        use_precomputed_dino=use_precomputed_dino,
     ).to(device)
     return model
 
@@ -97,6 +109,7 @@ def main() -> None:
     args = parse_args()
     cfg = load_yaml(args.config)
     eval_cfg = cfg.get("evaluation", {})
+    data_cfg = cfg.get("data", {})
 
     if args.splits:
         splits = [s.strip() for s in args.splits.split(",") if s.strip()]
@@ -123,12 +136,25 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() and cfg["hardware"]["device"] == "cuda" else "cpu")
     amp_enabled = bool(cfg["hardware"].get("amp", True)) and device.type == "cuda"
+    use_precomputed_dino = bool(eval_cfg.get("real_use_precomputed_dino", False) or args.use_precomputed_dino)
+    feature_store = None
+    if use_precomputed_dino:
+        index_path = (
+            args.precomputed_index_path.strip()
+            or str(eval_cfg.get("real_precomputed_index_path", data_cfg.get("precomputed_index_path", "")))
+        )
+        if not index_path:
+            raise ValueError("Precomputed real-eval requested but no index path configured")
+        feature_store = PrecomputedFeatureStore(
+            index_path,
+            max_cached_shards=int(data_cfg.get("precomputed_max_cached_shards", 1)),
+        )
 
     checkpoint_path = Path(args.checkpoint)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    model = build_model(cfg, device)
+    model = build_model(cfg, device, use_precomputed_dino=use_precomputed_dino)
     load_checkpoint_model(model, checkpoint_path, device)
     model.eval()
 
@@ -164,9 +190,19 @@ def main() -> None:
                     original_size = img_pil.size
                     img = tfm(img_pil).unsqueeze(0).to(device)
 
+                    precomputed = None
+                    if use_precomputed_dino:
+                        sample_id = _extract_sample_id(sample, i)
+                        precomputed = feature_store.get(split, sample_id).unsqueeze(0).to(device)
+
                     amp_ctx = torch.autocast(device_type="cuda", enabled=amp_enabled) if device.type == "cuda" else nullcontext()
                     with amp_ctx:
-                        pred = model(img, target_layer=target_layer, return_intermediate=False)
+                        pred = model(
+                            img,
+                            target_layer=target_layer,
+                            return_intermediate=False,
+                            precomputed_dino=precomputed,
+                        )
 
                     counts = evaluate_tuple_sample(pred, sample, original_size=original_size, layer_key=layer_key)
                     merge_tuple_counts(totals, counts)
@@ -192,6 +228,7 @@ def main() -> None:
         "splits": splits,
         "layer_keys": layer_keys,
         "target_layer": target_layer,
+        "use_precomputed_dino": use_precomputed_dino,
         "per_eval": per_eval,
         "aggregate": aggregate_summary,
         "official_quadruplet_accuracy": aggregate_summary.get("quads_acc", 0.0),

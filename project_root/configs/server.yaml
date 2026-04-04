@@ -24,7 +24,7 @@ data:
   pin_memory: false
   persistent_workers: false
   prefetch_factor: 1
-  batch_size: 12
+  batch_size: 24
   val_batch_size: 1
   depth_scale: 1000.0
   depth_clip_min: 1.0e-3
@@ -46,7 +46,7 @@ architecture:
 
 training:
   epochs: 100
-  accum_steps: 2
+  accum_steps: 1
   memory_efficient_multistage: true
   retry_nonfinite_with_fp32: false
   auto_disable_amp_on_nonfinite: false
@@ -92,6 +92,9 @@ evaluation:
   run_after_train: true
   run_synth_validation: true
   run_real_tuple_eval: true
+  periodic_real_eval_every_epochs: 5
+  periodic_real_max_samples: 200
+  real_use_precomputed_dino: false
   real_dataset_name: princeton-vl/LayeredDepth
   real_splits: [validation, test]
   real_layer_keys: [layer_all, layer_first]

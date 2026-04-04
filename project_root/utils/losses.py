@@ -1,12 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import warnings
 
 
 class SILogLoss(nn.Module):
-    def __init__(self, lambd=0.5):
+    def __init__(self, lambd=0.5, strict_empty_target: bool = False):
         super().__init__()
         self.lambd = lambd
+        self.strict_empty_target = bool(strict_empty_target)
+        self._warned_empty_target = False
 
     def forward(self, pred, target):
         if pred.shape != target.shape:
@@ -16,10 +19,29 @@ class SILogLoss(nn.Module):
         if valid_mask.sum() == 0:
             invalid_cnt = int((~torch.isfinite(target)).sum().item())
             non_positive_cnt = int(((target <= 0) & torch.isfinite(target)).sum().item())
+
+            # Some samples (especially layer-2) may legitimately have no valid depth.
+            # In non-strict mode, treat this as "no supervision" for this term.
+            if not self.strict_empty_target:
+                if not self._warned_empty_target:
+                    warnings.warn(
+                        "SILogLoss: empty valid target mask encountered; returning tiny no-op loss.",
+                        RuntimeWarning,
+                    )
+                    self._warned_empty_target = True
+                return pred.new_tensor(1e-6)
+
+            pred_finite = pred[torch.isfinite(pred)]
+            if pred_finite.numel() > 0:
+                pred_min = float(pred_finite.min().item())
+                pred_max = float(pred_finite.max().item())
+            else:
+                pred_min = float("nan")
+                pred_max = float("nan")
             raise RuntimeError(
                 "SILogLoss received empty valid target mask. "
                 f"invalid_target={invalid_cnt} non_positive_target={non_positive_cnt} "
-                f"pred_min={float(torch.nanmin(pred).item()):.6g} pred_max={float(torch.nanmax(pred).item()):.6g}"
+                f"pred_min={pred_min:.6g} pred_max={pred_max:.6g}"
             )
 
         pred_valid = torch.clamp(pred[valid_mask], min=1e-6)

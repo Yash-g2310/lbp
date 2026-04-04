@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import random
+import subprocess
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict, Tuple
@@ -236,7 +239,8 @@ def compute_single_stage_loss(
         )
 
     # Log a brief summary to terminal for immediate visibility when verbose logging is enabled.
-    log_terminal(True, f"[debug] input stats: {img_stats}; {depth_stats}; {dino_stats}")
+    # Disabled detailed per-batch input stats to reduce log spam.
+    log_terminal(False, f"[debug] input stats: {img_stats}; {depth_stats}; {dino_stats}")
     out = model(
         images,
         target_layer=target_layer,
@@ -350,6 +354,78 @@ def save_checkpoint(
     )
 
 
+def run_periodic_real_eval(
+    config_path: str,
+    cfg: Dict[str, Any],
+    checkpoint_path: Path,
+    epoch: int,
+    log_to_terminal: bool,
+) -> Dict[str, float] | None:
+    eval_cfg = cfg.get("evaluation", {})
+    report_dir = Path(str(eval_cfg.get("report_dir", "./artifacts/reports")))
+    report_dir.mkdir(parents=True, exist_ok=True)
+    output_path = report_dir / f"real_tuple_eval_epoch_{epoch+1}.json"
+
+    splits = eval_cfg.get("real_splits", [eval_cfg.get("real_split", "validation")])
+    layer_keys = eval_cfg.get("real_layer_keys", [eval_cfg.get("real_layer_key", "layer_all")])
+    target_layer = int(eval_cfg.get("target_layer", 1))
+    max_samples = int(eval_cfg.get("periodic_real_max_samples", 100))
+
+    cmd = [
+        sys.executable,
+        "scripts/evaluate_real_tuples.py",
+        "--config",
+        config_path,
+        "--checkpoint",
+        str(checkpoint_path),
+        "--splits",
+        ",".join(str(s) for s in splits),
+        "--layer-keys",
+        ",".join(str(k) for k in layer_keys),
+        "--target-layer",
+        str(target_layer),
+        "--max-samples",
+        str(max_samples),
+        "--output",
+        str(output_path),
+    ]
+
+    if bool(eval_cfg.get("real_use_precomputed_dino", False)):
+        cmd.append("--use-precomputed-dino")
+        idx_override = str(eval_cfg.get("real_precomputed_index_path", "")).strip()
+        if idx_override:
+            cmd.extend(["--precomputed-index-path", idx_override])
+
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        log_terminal(
+            log_to_terminal,
+            (
+                f"[warn] periodic real eval failed at epoch {epoch+1}; "
+                f"returncode={exc.returncode}"
+            ),
+        )
+        if exc.stderr:
+            tail = "\n".join(exc.stderr.strip().splitlines()[-5:])
+            log_terminal(log_to_terminal, f"[warn] periodic eval stderr tail:\n{tail}")
+        return None
+
+    try:
+        report = json.loads(output_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        log_terminal(log_to_terminal, f"[warn] periodic real eval report parse failed: {exc}")
+        return None
+
+    agg = report.get("aggregate", {})
+    return {
+        "pairs_acc": float(agg.get("pairs_acc", 0.0)),
+        "trips_acc": float(agg.get("trips_acc", 0.0)),
+        "quads_acc": float(agg.get("quads_acc", 0.0)),
+        "all_acc": float(agg.get("all_acc", 0.0)),
+    }
+
+
 def maybe_resume(
     path: Path,
     model: torch.nn.Module,
@@ -420,6 +496,7 @@ def main() -> None:
     log_cfg = config.get("logging", {})
     log_to_terminal = bool(log_cfg.get("log_to_terminal", True))
     verbose_components = bool(log_cfg.get("verbose_components", True))
+    periodic_eval_every = int(config.get("evaluation", {}).get("periodic_real_eval_every_epochs", 0))
 
     fft_mode = "fp32" if force_fp32_impl else config["architecture"]["fft_mode"]
     model = DINOSFIN_Architecture_NEW(
@@ -690,7 +767,7 @@ def main() -> None:
                             'optimizer_state': optimizer.state_dict(),
                         }, 'nan_dbg_grad.pt')
                         raise RuntimeError(f"NaN gradient detected for param {n} at epoch={epoch+1} step={step+1}")
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm * accum_steps)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
                 skip_step = False
                 if not torch.isfinite(grad_norm):
                     if amp_scaler_enabled and amp_runtime_enabled:
@@ -894,6 +971,37 @@ def main() -> None:
         if (epoch + 1) % int(ckpt_cfg.get("save_every_epochs", 1)) == 0:
             save_checkpoint(latest_ckpt, epoch, best_val_loss, model, optimizer, scheduler, scaler)
             log_terminal(log_to_terminal, f"[ckpt] Updated latest checkpoint: {latest_ckpt}")
+
+        if main_process and periodic_eval_every > 0 and ((epoch + 1) % periodic_eval_every == 0):
+            metrics = run_periodic_real_eval(
+                config_path=args.config,
+                cfg=config,
+                checkpoint_path=latest_ckpt,
+                epoch=epoch,
+                log_to_terminal=log_to_terminal,
+            )
+            if metrics is not None:
+                log_terminal(
+                    log_to_terminal,
+                    (
+                        f"[periodic-real-eval][epoch {epoch+1}] "
+                        f"pairs_acc={metrics['pairs_acc']:.4f} "
+                        f"trips_acc={metrics['trips_acc']:.4f} "
+                        f"quads_acc={metrics['quads_acc']:.4f} "
+                        f"all_acc={metrics['all_acc']:.4f}"
+                    ),
+                )
+                if run is not None:
+                    run.log(
+                        {
+                            "periodic_real/pairs_acc": metrics["pairs_acc"],
+                            "periodic_real/trips_acc": metrics["trips_acc"],
+                            "periodic_real/quads_acc": metrics["quads_acc"],
+                            "periodic_real/all_acc": metrics["all_acc"],
+                            "periodic_real/epoch": epoch + 1,
+                        },
+                        step=global_step,
+                    )
 
     if run is not None:
         run.finish()
