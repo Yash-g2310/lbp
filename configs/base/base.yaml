@@ -6,10 +6,10 @@ experiment:
 
 training:
   checkpoint:
-    dir: ./checkpoints
+    dir: ./runs/current/checkpoints
     latest_name: latest_checkpoint.pth
     best_name: best_checkpoint.pth
     save_every_epochs: 1
 
 evaluation:
-  report_dir: ./artifacts/reports
+  report_dir: ./runs/current/reports

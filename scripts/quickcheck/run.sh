@@ -82,7 +82,7 @@ PY
 fi
 
 echo "[stage 6/6] real tuple eval quickcheck"
-QC_CKPT="$ROOT_DIR/artifacts/quickcheck/checkpoints/quickcheck/sanity_roundtrip.pth"
+QC_CKPT="$ROOT_DIR/runs/current/quickcheck/checkpoints/quickcheck/sanity_roundtrip.pth"
 "$PYTHON_BIN" scripts/eval/eval_real_tuples.py \
 	--config "$CONFIG_PATH" \
 	--checkpoint "$QC_CKPT" \
@@ -90,6 +90,6 @@ QC_CKPT="$ROOT_DIR/artifacts/quickcheck/checkpoints/quickcheck/sanity_roundtrip.
 	--layer-keys "$EVAL_LAYER_KEYS" \
 	--target-layer "$TARGET_LAYER" \
 	--max-samples "$MAX_SAMPLES" \
-	--output "$ROOT_DIR/artifacts/quickcheck/reports/real_tuple_eval_quickcheck.json"
+	--output "$ROOT_DIR/runs/current/quickcheck/reports/real_tuple_eval_quickcheck.json"
 
 echo "[done] quickcheck pipeline passed for $CONFIG_PATH"

@@ -5,8 +5,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=23:55:00
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=runs/current/logs/%x-%j.out
+#SBATCH --error=runs/current/logs/%x-%j.err
 
 set -euo pipefail
 
@@ -27,7 +27,7 @@ else
 fi
 CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/server/default.yaml}"
 
-mkdir -p "$ROOT_DIR/logs"
+mkdir -p "$ROOT_DIR/runs/current/logs"
 cd "$ROOT_DIR"
 
 # Helps reduce fragmentation-related CUDA OOMs in long FFT-heavy runs.

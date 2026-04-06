@@ -122,7 +122,7 @@ def main() -> None:
     base_report_dir = (
         Path(args.output_dir)
         if args.output_dir.strip()
-        else Path(str(eval_cfg.get("report_dir", "./artifacts/reports"))) / "checkpoints_scan"
+        else Path(str(eval_cfg.get("report_dir", "./runs/current/reports"))) / "checkpoints_scan"
     )
     base_report_dir.mkdir(parents=True, exist_ok=True)
 

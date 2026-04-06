@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Dict
 
 
@@ -21,8 +22,12 @@ def setup_wandb(cfg: Dict[str, Any], model=None):
     if mode not in valid_modes:
         raise ValueError(f"Invalid wandb mode '{mode}'. Expected one of: {sorted(valid_modes)}")
 
+    wandb_dir = str(log_cfg.get("wandb_dir", "./runs/current/wandb"))
+    Path(wandb_dir).mkdir(parents=True, exist_ok=True)
+
     # Keep behavior deterministic across local/server by honoring config mode explicitly.
     os.environ["WANDB_MODE"] = mode
+    os.environ["WANDB_DIR"] = wandb_dir
 
     run = wandb.init(
         project=log_cfg.get("project"),
@@ -30,6 +35,7 @@ def setup_wandb(cfg: Dict[str, Any], model=None):
         name=log_cfg.get("run_name"),
         mode=mode,
         config=cfg,
+        dir=wandb_dir,
     )
 
     if run is not None:

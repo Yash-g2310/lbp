@@ -45,7 +45,7 @@ training:
     t_max_epochs: 1
     eta_min: 1.0e-6
   checkpoint:
-    dir: ./artifacts/quickcheck/checkpoints
+    dir: ./runs/current/quickcheck/checkpoints
     latest_name: latest_checkpoint.pth
     best_name: best_checkpoint.pth
     save_every_epochs: 1
@@ -60,6 +60,7 @@ logging:
   project: layered-depth-estimation
   entity: null
   run_name: quickcheck-local
+  wandb_dir: ./runs/current/wandb
   mode: dryrun
   log_every_steps: 1
   train_log_every_steps: 1
@@ -79,7 +80,7 @@ evaluation:
   target_layer: 1
   synth_max_batches: 5
   real_max_samples: 20
-  report_dir: ./artifacts/quickcheck/reports
+  report_dir: ./runs/current/quickcheck/reports
   checkpoint_name: best_checkpoint.pth
 
 auth:

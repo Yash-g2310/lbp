@@ -58,7 +58,7 @@ def main() -> None:
         else:
             raise FileNotFoundError(f"No checkpoint found at {checkpoint} or fallback {fallback}")
 
-    report_dir = Path(str(eval_cfg.get("report_dir", "./artifacts/reports")))
+    report_dir = Path(str(eval_cfg.get("report_dir", "./runs/current/reports")))
     report_dir.mkdir(parents=True, exist_ok=True)
 
     synth_report = report_dir / "synth_eval.json"

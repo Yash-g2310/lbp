@@ -5,8 +5,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=23:55:00
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=runs/current/logs/%x-%j.out
+#SBATCH --error=runs/current/logs/%x-%j.err
 
 set -euo pipefail
 
@@ -30,10 +30,10 @@ CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/server/default.yaml}"
 EVAL_SPLITS="${EVAL_SPLITS:-}"
 EVAL_LAYER_KEYS="${EVAL_LAYER_KEYS:-}"
 MAX_SAMPLES="${MAX_SAMPLES:-}"
-CHECKPOINT_PATH="${CHECKPOINT_PATH:-$ROOT_DIR/checkpoints/best_checkpoint.pth}"
+CHECKPOINT_PATH="${CHECKPOINT_PATH:-$ROOT_DIR/runs/current/checkpoints/best_checkpoint.pth}"
 
-REPORT_DIR="${REPORT_DIR:-$ROOT_DIR/artifacts/reports}"
-mkdir -p "$ROOT_DIR/logs" "$REPORT_DIR"
+REPORT_DIR="${REPORT_DIR:-$ROOT_DIR/runs/current/reports}"
+mkdir -p "$ROOT_DIR/runs/current/logs" "$REPORT_DIR"
 REPORT_PATH="${REPORT_PATH:-$REPORT_DIR/real_tuple_eval_${SLURM_JOB_ID:-manual}.json}"
 
 cd "$ROOT_DIR"

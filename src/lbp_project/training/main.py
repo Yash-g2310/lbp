@@ -362,7 +362,7 @@ def run_periodic_real_eval(
     log_to_terminal: bool,
 ) -> Dict[str, float] | None:
     eval_cfg = cfg.get("evaluation", {})
-    report_dir = Path(str(eval_cfg.get("report_dir", "./artifacts/reports")))
+    report_dir = Path(str(eval_cfg.get("report_dir", "./runs/current/reports")))
     report_dir.mkdir(parents=True, exist_ok=True)
     output_path = report_dir / f"real_tuple_eval_epoch_{epoch+1}.json"
 

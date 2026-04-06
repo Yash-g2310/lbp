@@ -63,7 +63,7 @@ training:
     t_max_epochs: 100
     eta_min: 1.0e-6
   checkpoint:
-    dir: ./checkpoints
+    dir: ./runs/current/checkpoints
     latest_name: latest_checkpoint.pth
     best_name: best_checkpoint.pth
     save_every_epochs: 1
@@ -79,6 +79,7 @@ logging:
   project: layered-depth-estimation
   entity: null
   run_name: server-run
+  wandb_dir: ./runs/current/wandb
   mode: online
   log_every_steps: 20
   train_log_every_steps: 20
@@ -101,7 +102,7 @@ evaluation:
   target_layer: 1
   synth_max_batches: 0
   real_max_samples: 0
-  report_dir: ./artifacts/reports
+  report_dir: ./runs/current/reports
   checkpoint_name: best_checkpoint.pth
 
 auth:

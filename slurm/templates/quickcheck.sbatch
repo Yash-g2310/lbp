@@ -5,8 +5,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=16G
 #SBATCH --time=00:20:00
-#SBATCH --output=logs/%x-%j.out
-#SBATCH --error=logs/%x-%j.err
+#SBATCH --output=runs/current/logs/%x-%j.out
+#SBATCH --error=runs/current/logs/%x-%j.err
 
 set -euo pipefail
 
@@ -18,7 +18,7 @@ fi
 PYTHON_BIN="${PYTHON_BIN:-python}"
 CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/server/quickcheck.yaml}"
 
-mkdir -p "$ROOT_DIR/logs"
+mkdir -p "$ROOT_DIR/runs/current/logs"
 cd "$ROOT_DIR"
 
 "$PYTHON_BIN" scripts/server/preflight.py --config "$CONFIG_PATH" --sbatch "$ROOT_DIR/slurm/templates/quickcheck.sbatch"
