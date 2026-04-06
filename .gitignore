@@ -38,7 +38,6 @@ Thumbs.db
 # Training Artifacts and Runtime Outputs
 # =============================================================================
 checkpoints/
-artifacts/
 logs/
 wandb/
 local_cache/
