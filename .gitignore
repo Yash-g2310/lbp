@@ -40,7 +40,11 @@ Thumbs.db
 checkpoints/
 logs/
 wandb/
+runs/
 local_cache/
+artifacts/reports/
+artifacts/archive/
+artifacts/tmp/
 
 # =============================================================================
 # Model and Binary Outputs
