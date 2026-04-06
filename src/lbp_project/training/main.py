@@ -12,12 +12,13 @@ from typing import Any, Dict, Tuple
 import numpy as np
 import torch
 import torch.optim as optim
-import yaml
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
-from data.dataset import get_dataloaders
-from models.wrapper import DINOSFIN_Architecture_NEW
-from utils.logger import setup_wandb
-from utils.losses import SILogLoss
+from lbp_project.config.io import load_yaml
+from lbp_project.data.dataset import get_dataloaders
+from lbp_project.models.wrapper import DINOSFIN_Architecture_NEW
+from lbp_project.utils.logger import setup_wandb
+from lbp_project.utils.losses import SILogLoss
 
 
 def resolve_amp_dtype(hardware_cfg: Dict[str, Any], device: torch.device) -> torch.dtype:
@@ -40,13 +41,12 @@ def resolve_amp_dtype(hardware_cfg: Dict[str, Any], device: torch.device) -> tor
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Layered Depth Estimation")
-    parser.add_argument("--config", type=str, default="configs/local.yaml", help="Path to config YAML")
+    parser.add_argument("--config", type=str, default="configs/local/dev.yaml", help="Path to config YAML")
     return parser.parse_args()
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
-    with open(config_path, "r", encoding="utf-8") as file:
-        return yaml.safe_load(file)
+    return load_yaml(config_path)
 
 
 def set_seed(seed: int) -> None:
@@ -373,7 +373,7 @@ def run_periodic_real_eval(
 
     cmd = [
         sys.executable,
-        "scripts/evaluate_real_tuples.py",
+        "scripts/eval/eval_real_tuples.py",
         "--config",
         config_path,
         "--checkpoint",
