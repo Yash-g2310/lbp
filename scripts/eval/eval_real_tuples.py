@@ -11,18 +11,19 @@ from typing import Any, Dict
 import sys
 
 import torch
-import yaml
 from datasets import load_dataset
 import torchvision.transforms as transforms
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-from data.dataset import PrecomputedFeatureStore, _extract_sample_id
-
-from models.wrapper import DINOSFIN_Architecture_NEW
-from utils.metrics import evaluate_tuple_sample, merge_tuple_counts, summarize_tuple_counts
+from lbp_project.config.io import load_yaml
+from lbp_project.data.dataset import PrecomputedFeatureStore, _extract_sample_id
+from lbp_project.models.factory import build_depth_model
+from lbp_project.utils.checkpoints import load_checkpoint_model
+from lbp_project.utils.metrics import evaluate_tuple_sample, merge_tuple_counts, summarize_tuple_counts
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,52 +48,6 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--output", required=True, help="Output JSON path")
     return p.parse_args()
-
-
-def load_yaml(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    if not isinstance(cfg, dict):
-        raise ValueError("Config root must be a mapping")
-    return cfg
-
-
-def build_model(cfg: Dict[str, Any], device: torch.device, use_precomputed_dino: bool) -> torch.nn.Module:
-    model = DINOSFIN_Architecture_NEW(
-        strategy=cfg["architecture"]["strategy"],
-        base_channels=int(cfg["architecture"]["base_channels"]),
-        num_sfin=int(cfg["architecture"]["num_sfin"]),
-        num_rhag=int(cfg["architecture"]["num_rhag"]),
-        window_size=int(cfg["architecture"]["window_size"]),
-        dino_embed_dim=int(cfg["architecture"]["dino_embed_dim"]),
-        fft_mode=cfg["architecture"]["fft_mode"],
-        fft_pad_size=int(cfg["architecture"]["fft_pad_size"]),
-        use_precomputed_dino=use_precomputed_dino,
-    ).to(device)
-    return model
-
-
-def load_checkpoint_model(model: torch.nn.Module, checkpoint_path: Path, device: torch.device) -> None:
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model_key = "model_state" if "model_state" in checkpoint else "model_state_dict"
-    missing, unexpected = model.load_state_dict(checkpoint[model_key], strict=False)
-
-    # Real-tuple evaluation builds a model with a live DINO encoder, but training
-    # may have used precomputed DINO features (encoder omitted from checkpoint).
-    # Accept missing encoder keys only; fail on everything else.
-    missing_non_encoder = [k for k in missing if not k.startswith("encoder.")]
-    if missing_non_encoder:
-        raise RuntimeError(
-            "Checkpoint is missing non-encoder weights required for evaluation: "
-            f"{missing_non_encoder[:20]}"
-        )
-    if unexpected:
-        raise RuntimeError(f"Checkpoint has unexpected keys: {unexpected[:20]}")
-    if missing:
-        print(
-            f"[eval-tuples] warning: checkpoint missing {len(missing)} encoder keys; "
-            "using freshly loaded frozen DINO encoder for evaluation"
-        )
 
 
 def image_transform() -> transforms.Compose:
@@ -154,8 +109,21 @@ def main() -> None:
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    model = build_model(cfg, device, use_precomputed_dino=use_precomputed_dino)
-    load_checkpoint_model(model, checkpoint_path, device)
+    model = build_depth_model(cfg, device, use_precomputed_dino=use_precomputed_dino)
+    missing, unexpected = load_checkpoint_model(
+        model,
+        checkpoint_path,
+        device=device,
+        strict=False,
+        allow_missing_prefixes=("encoder.",),
+    )
+    if missing:
+        raise RuntimeError(
+            "Checkpoint is missing non-encoder weights required for evaluation: "
+            f"{missing[:20]}"
+        )
+    if unexpected:
+        raise RuntimeError(f"Checkpoint has unexpected keys: {unexpected[:20]}")
     model.eval()
 
     tfm = image_transform()

@@ -4,18 +4,18 @@ import argparse
 from contextlib import nullcontext
 import sys
 from pathlib import Path
-from typing import Any, Dict
 
 import torch
-import yaml
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-from data.dataset import get_dataloaders
-from models.wrapper import DINOSFIN_Architecture_NEW
-from utils.losses import SILogLoss
+from lbp_project.config.io import load_yaml
+from lbp_project.data.dataset import get_dataloaders
+from lbp_project.models.factory import build_depth_model
+from lbp_project.utils.losses import SILogLoss
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,14 +25,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_config(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
 def main() -> None:
     args = parse_args()
-    cfg = load_config(args.config)
+    cfg = load_yaml(args.config)
 
     # Smoke test uses very conservative memory settings by default.
     cfg["data"]["batch_size"] = min(int(cfg["data"]["batch_size"]), int(args.max_batch_size))
@@ -44,17 +39,7 @@ def main() -> None:
     amp_dtype_name = str(cfg["hardware"].get("amp_dtype", "float16")).lower()
     amp_dtype = torch.bfloat16 if amp_dtype_name in {"bf16", "bfloat16"} else torch.float16
 
-    model = DINOSFIN_Architecture_NEW(
-        strategy=cfg["architecture"]["strategy"],
-        base_channels=int(cfg["architecture"]["base_channels"]),
-        num_sfin=int(cfg["architecture"]["num_sfin"]),
-        num_rhag=int(cfg["architecture"]["num_rhag"]),
-        window_size=int(cfg["architecture"]["window_size"]),
-        dino_embed_dim=int(cfg["architecture"]["dino_embed_dim"]),
-        fft_mode=cfg["architecture"]["fft_mode"],
-        fft_pad_size=int(cfg["architecture"]["fft_pad_size"]),
-        use_precomputed_dino=bool(cfg["data"].get("use_precomputed_dino", False)),
-    ).to(device)
+    model = build_depth_model(cfg, device)
     model.train()
 
     criterion = SILogLoss()

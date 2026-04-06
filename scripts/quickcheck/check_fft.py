@@ -9,13 +9,14 @@ from typing import Any, Dict, List, Tuple
 import sys
 
 import torch
-import yaml
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-from models.components import FourierUnit
+from lbp_project.config.io import load_yaml
+from lbp_project.models.components import FourierUnit
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,14 +25,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=2, help="Synthetic batch size")
     p.add_argument("--fail-rel-l2", type=float, default=1.5, help="Fail if relative L2 exceeds this value")
     return p.parse_args()
-
-
-def load_yaml(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    if not isinstance(cfg, dict):
-        raise ValueError(f"Config must parse to mapping: {path}")
-    return cfg
 
 
 def rel_l2(ref: torch.Tensor, out: torch.Tensor) -> float:

@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Bootstraps a server-side conda environment for this project.
 # Usage:
-#   bash scripts/setup_server_env.sh [env_name]
+#   bash scripts/server/bootstrap_env.sh [env_name]
 
 ENV_NAME="${1:-monodepth}"
 PYTHON_VERSION="3.10"

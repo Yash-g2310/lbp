@@ -7,20 +7,21 @@ import argparse
 import json
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Dict
 import sys
 
 import torch
-import yaml
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
-from data.dataset import get_dataloaders
-from models.wrapper import DINOSFIN_Architecture_NEW
-from utils.losses import SILogLoss
-from utils.metrics import RunningAverage, compute_depth_metrics
+from lbp_project.config.io import load_yaml
+from lbp_project.data.dataset import get_dataloaders
+from lbp_project.models.factory import build_depth_model
+from lbp_project.utils.checkpoints import load_checkpoint_model
+from lbp_project.utils.losses import SILogLoss
+from lbp_project.utils.metrics import RunningAverage, compute_depth_metrics
 
 
 def parse_args() -> argparse.Namespace:
@@ -30,35 +31,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-batches", type=int, default=0, help="Limit validation batches (0=all)")
     p.add_argument("--output", required=True, help="Output JSON path")
     return p.parse_args()
-
-
-def load_yaml(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    if not isinstance(cfg, dict):
-        raise ValueError("Config root must be a mapping")
-    return cfg
-
-
-def build_model(cfg: Dict[str, Any], device: torch.device) -> torch.nn.Module:
-    model = DINOSFIN_Architecture_NEW(
-        strategy=cfg["architecture"]["strategy"],
-        base_channels=int(cfg["architecture"]["base_channels"]),
-        num_sfin=int(cfg["architecture"]["num_sfin"]),
-        num_rhag=int(cfg["architecture"]["num_rhag"]),
-        window_size=int(cfg["architecture"]["window_size"]),
-        dino_embed_dim=int(cfg["architecture"]["dino_embed_dim"]),
-        fft_mode=cfg["architecture"]["fft_mode"],
-        fft_pad_size=int(cfg["architecture"]["fft_pad_size"]),
-        use_precomputed_dino=bool(cfg["data"].get("use_precomputed_dino", False)),
-    ).to(device)
-    return model
-
-
-def load_checkpoint_model(model: torch.nn.Module, checkpoint_path: Path, device: torch.device) -> None:
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model_key = "model_state" if "model_state" in checkpoint else "model_state_dict"
-    model.load_state_dict(checkpoint[model_key])
 
 
 def main() -> None:
@@ -73,8 +45,12 @@ def main() -> None:
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     _, val_loader = get_dataloaders(cfg)
-    model = build_model(cfg, device)
-    load_checkpoint_model(model, checkpoint_path, device)
+    model = build_depth_model(cfg, device)
+    missing, unexpected = load_checkpoint_model(model, checkpoint_path, device=device, strict=True)
+    if missing or unexpected:
+        raise RuntimeError(
+            f"Checkpoint/state mismatch for synthetic eval. missing={missing[:10]} unexpected={unexpected[:10]}"
+        )
     model.eval()
 
     criterion = SILogLoss()

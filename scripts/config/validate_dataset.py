@@ -7,9 +7,16 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, Set, Tuple
+import sys
 
-import yaml
 from datasets import load_dataset
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from lbp_project.config.io import load_yaml
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,14 +47,6 @@ def parse_args() -> argparse.Namespace:
         help="Optional cache dir used if configured cache_dir is inaccessible on this machine",
     )
     return p.parse_args()
-
-
-def load_yaml(path: Path) -> Dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"Invalid YAML root in {path}")
-    return data
 
 
 def log(msg: str) -> None:

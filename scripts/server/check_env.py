@@ -6,24 +6,20 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-from typing import Any, Dict
 import sys
 
-import yaml
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from lbp_project.config.io import load_yaml
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Check server env readiness")
     p.add_argument("--config", required=True, help="Config path")
     return p.parse_args()
-
-
-def load_yaml(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    if not isinstance(cfg, dict):
-        raise ValueError("Config root must be a mapping")
-    return cfg
 
 
 def has_wandb_auth() -> bool:

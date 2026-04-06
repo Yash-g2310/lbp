@@ -8,8 +8,14 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Any, Dict
+import sys
 
-import yaml
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from lbp_project.config.io import load_yaml
 
 
 def parse_args() -> argparse.Namespace:
@@ -18,14 +24,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--python", default="python", help="Python executable")
     p.add_argument("--skip-train", action="store_true", help="Skip training and only evaluate")
     return p.parse_args()
-
-
-def load_yaml(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    if not isinstance(cfg, dict):
-        raise ValueError("Config root must be a mapping")
-    return cfg
 
 
 def run_cmd(cmd: list[str]) -> None:
@@ -70,7 +68,7 @@ def main() -> None:
         run_cmd(
             [
                 args.python,
-                "scripts/evaluate_synth_depth.py",
+                "scripts/eval/eval_synth_depth.py",
                 "--config",
                 args.config,
                 "--checkpoint",
@@ -90,7 +88,7 @@ def main() -> None:
         run_cmd(
             [
                 args.python,
-                "scripts/evaluate_real_tuples.py",
+                "scripts/eval/eval_real_tuples.py",
                 "--config",
                 args.config,
                 "--checkpoint",

@@ -2,8 +2,8 @@
 """Evaluate one or more checkpoints on synthetic and real benchmarks.
 
 This wrapper runs:
-- scripts/evaluate_synth_depth.py (validation synthetic depth)
-- scripts/evaluate_real_tuples.py (real tuple benchmark on requested splits)
+- scripts/eval/eval_synth_depth.py (validation synthetic depth)
+- scripts/eval/eval_real_tuples.py (real tuple benchmark on requested splits)
 
 It stores per-checkpoint JSON reports and writes an aggregate summary.
 """
@@ -15,8 +15,14 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
+import sys
 
-import yaml
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from lbp_project.config.io import load_yaml
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Evaluate multiple checkpoints")
@@ -39,8 +45,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--python", default="python", help="Python executable")
     p.add_argument(
         "--real-splits",
-        default="validation,test",
-        help="Comma-separated splits for real tuple evaluation",
+        default="",
+        help="Comma-separated splits for real tuple evaluation (default from config)",
     )
     p.add_argument(
         "--real-layer-keys",
@@ -78,14 +84,6 @@ def parse_args() -> argparse.Namespace:
         help="Stop immediately if a checkpoint evaluation fails",
     )
     return p.parse_args()
-
-
-def load_yaml(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    if not isinstance(cfg, dict):
-        raise ValueError("Config root must be a mapping")
-    return cfg
 
 
 def run_cmd(cmd: List[str]) -> None:
@@ -134,7 +132,11 @@ def main() -> None:
         keys = eval_cfg.get("real_layer_keys", [eval_cfg.get("real_layer_key", "layer_all")])
         real_layer_keys = ",".join(str(k) for k in keys)
 
-    real_splits = args.real_splits.strip() if args.real_splits.strip() else "validation,test"
+    if args.real_splits.strip():
+        real_splits = args.real_splits.strip()
+    else:
+        splits = eval_cfg.get("real_splits", [eval_cfg.get("real_split", "validation")])
+        real_splits = ",".join(str(s) for s in splits)
     target_layer = int(args.target_layer) if args.target_layer > 0 else int(eval_cfg.get("target_layer", 1))
     synth_max_batches = (
         int(args.synth_max_batches)
@@ -177,7 +179,7 @@ def main() -> None:
                 run_cmd(
                     [
                         args.python,
-                        "scripts/evaluate_synth_depth.py",
+                        "scripts/eval/eval_synth_depth.py",
                         "--config",
                         args.config,
                         "--checkpoint",
@@ -198,7 +200,7 @@ def main() -> None:
                 run_cmd(
                     [
                         args.python,
-                        "scripts/evaluate_real_tuples.py",
+                        "scripts/eval/eval_real_tuples.py",
                         "--config",
                         args.config,
                         "--checkpoint",
