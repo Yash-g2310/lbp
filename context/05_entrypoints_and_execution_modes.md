@@ -1,6 +1,6 @@
 # Entrypoints and Execution Modes
 
-Last reviewed: 2026-04-05
+Last reviewed: 2026-04-06
 
 ## Unified CLI
 
@@ -53,3 +53,17 @@ Behavior:
 
 - Submit wrapper: `slurm/submit.sh`
 - Templates: `slurm/templates/*.sbatch`
+
+## Runtime Outputs
+
+- Canonical runtime root: `runs/current/`
+- Checkpoints: `runs/current/checkpoints/`
+- Slurm logs: `runs/current/logs/`
+- Evaluation reports: `runs/current/reports/`
+- Quickcheck outputs: `runs/current/quickcheck/`
+- W&B local metadata: `runs/current/wandb/`
+
+## Layout Status
+
+- `project_root/` is removed from the active repository layout.
+- Curated shareable artifacts remain under `artifacts/` (for example `artifacts/insights/`).

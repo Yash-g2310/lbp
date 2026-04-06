@@ -6,10 +6,11 @@ This folder holds curated, modular context for future chats.
 
 1. `01_scope_and_current_state.md`
 2. `10_repository_layout_reconciliation.md`
-3. `03_data_segments_and_usage.md`
-4. `04_indexing_precompute.md`
-5. `05_entrypoints_and_execution_modes.md`
-6. `07_known_risks_and_open_items.md`
+3. `12_runtime_layout_and_cleanup_status.md`
+4. `03_data_segments_and_usage.md`
+5. `04_indexing_precompute.md`
+6. `05_entrypoints_and_execution_modes.md`
+7. `07_known_risks_and_open_items.md`
 
 ## File Index
 
@@ -24,6 +25,7 @@ This folder holds curated, modular context for future chats.
 - `09_update_protocol.md`: update rules so context stays modular.
 - `10_repository_layout_reconciliation.md`: old tracked layout to canonical root mapping.
 - `11_transparent_surface_cues_lab.md`: experiment notebook scope, outputs, and first-run insights.
+- `12_runtime_layout_and_cleanup_status.md`: final runtime-path migration status and deletion summary.
 
 ## Guardrails
 

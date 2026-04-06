@@ -1,10 +1,10 @@
 # Repository Layout Reconciliation
 
-Last reviewed: 2026-04-05
+Last reviewed: 2026-04-06
 
 ## Why This File Exists
 
-The repository index currently reflects an older tracked layout rooted at `project_root/`, while active development is now happening at repository root (`src/`, `scripts/`, `configs/`, `docs/`, `context/`).
+This file captures the completed reconciliation from the old tracked `project_root/` layout to the repository-root modular layout.
 
 This file captures the intended migration mapping so subsequent chats and commits stay consistent.
 
@@ -23,6 +23,8 @@ Canonical project root is the repository root:
 
 The legacy `project_root/` tracked structure is treated as deprecated history.
 
+Status update: `project_root/` has been fully removed from the active runtime structure.
+
 ## High-Level Migration Mapping
 
 | Legacy tracked path | Canonical path |
@@ -37,6 +39,12 @@ The legacy `project_root/` tracked structure is treated as deprecated history.
 | `project_root/slurm/*.sbatch` | `slurm/templates/*.sbatch` |
 | `project_root/slurm/submit_server.sh` | `slurm/submit.sh` |
 | `project_root/docs/*.md` | `docs/guides/*.md`, `docs/reference/*.md`, compatibility pages in `docs/*.md` |
+
+## Runtime Layout (Current)
+
+- Active runtime outputs live under `runs/current/`.
+- Optional historical runtime outputs live under `runs/archive/`.
+- Curated outputs intended for sharing remain under `artifacts/`.
 
 ## Notes About Notebooks and Reports
 
@@ -55,3 +63,6 @@ The legacy `project_root/` tracked structure is treated as deprecated history.
 - Markdown links across `docs/` and `context/`: passing.
 - Reporting scripts write to `docs/generated/`: passing.
 - `.gitignore` policy includes notebooks and generated artifacts: applied.
+- Runtime and Slurm paths are standardized on `runs/current/`: applied.
+- Legacy `project_root/` directory removal: applied.
+- Post-removal config/preflight and Slurm dry-run checks: passing.

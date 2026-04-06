@@ -1,12 +1,13 @@
 # Known Risks and Open Items
 
-Last reviewed: 2026-04-05
+Last reviewed: 2026-04-06
 
 ## Data and Cache Risks
 
 1. Local cache is partial for three of the four key segments.
 2. Offline load viability differs by split because local arrow availability differs.
 3. Remote parquet counts and local cache shape can diverge without implying corruption.
+4. `configs/local/quickcheck.yaml` can fail on this server because `/home/yash_gupta/...` is not writable here.
 
 ## Evaluation Risks
 
@@ -23,3 +24,4 @@ Last reviewed: 2026-04-05
 1. Optional cache repair matrix for failing local splits.
 2. Optional dedicated CLI command for data-truth reporting.
 3. Optional strict checks that fail fast when configured split/index prerequisites are missing.
+4. Optional harmonization of local config cache paths for multi-host portability.
