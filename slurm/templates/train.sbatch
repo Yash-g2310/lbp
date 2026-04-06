@@ -11,8 +11,9 @@
 set -euo pipefail
 
 ROOT_DIR="${ROOT_DIR:-$PWD}"
-if [[ ! -f "$ROOT_DIR/train.py" ]]; then
-	ROOT_DIR="$PWD/project_root"
+if [[ ! -f "$ROOT_DIR/cli.py" ]]; then
+	echo "[FAIL] cli.py not found in ROOT_DIR=$ROOT_DIR" >&2
+	exit 1
 fi
 if [[ -n "${PYTHON_BIN:-}" ]]; then
 	PYTHON_BIN="$PYTHON_BIN"
@@ -24,7 +25,7 @@ else
 	echo "[FAIL] No python executable found. Set PYTHON_BIN explicitly." >&2
 	exit 1
 fi
-CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/server.yaml}"
+CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/server/default.yaml}"
 
 mkdir -p "$ROOT_DIR/logs"
 cd "$ROOT_DIR"
@@ -47,11 +48,11 @@ if missing:
 print(f"[env] python={sys.executable}")
 PY
 
-"$PYTHON_BIN" scripts/preflight_server.py --config "$CONFIG_PATH" --sbatch "$ROOT_DIR/slurm/train_server.sbatch"
-"$PYTHON_BIN" scripts/server_env_doctor.py --config "$CONFIG_PATH"
+"$PYTHON_BIN" scripts/server/preflight.py --config "$CONFIG_PATH" --sbatch "$ROOT_DIR/slurm/templates/train.sbatch"
+"$PYTHON_BIN" scripts/server/check_env.py --config "$CONFIG_PATH"
 
-echo "[cmd] $PYTHON_BIN scripts/smoke_one_batch.py --config $CONFIG_PATH --max-batch-size ${PRECHECK_MAX_BATCH:-1}"
-"$PYTHON_BIN" scripts/smoke_one_batch.py --config "$CONFIG_PATH" --max-batch-size "${PRECHECK_MAX_BATCH:-1}"
+echo "[cmd] $PYTHON_BIN scripts/training/smoke_batch.py --config $CONFIG_PATH --max-batch-size ${PRECHECK_MAX_BATCH:-1}"
+"$PYTHON_BIN" scripts/training/smoke_batch.py --config "$CONFIG_PATH" --max-batch-size "${PRECHECK_MAX_BATCH:-1}"
 echo "[OK] one-batch precheck passed"
 
-"$PYTHON_BIN" scripts/train_and_eval.py --config "$CONFIG_PATH" --python "$PYTHON_BIN"
+"$PYTHON_BIN" cli.py train-eval --config "$CONFIG_PATH" --python "$PYTHON_BIN"

@@ -8,16 +8,16 @@ CHECKPOINT_PATH="${3:-${CHECKPOINT_PATH:-}}"
 
 case "$MODE" in
   quickcheck)
-    SBATCH_FILE="$ROOT_DIR/slurm/quickcheck.sbatch"
-    CONFIG_PATH="${2:-$ROOT_DIR/configs/quickcheck_server.yaml}"
+    SBATCH_FILE="$ROOT_DIR/slurm/templates/quickcheck.sbatch"
+    CONFIG_PATH="${2:-$ROOT_DIR/configs/server/quickcheck.yaml}"
     ;;
   train)
-    SBATCH_FILE="$ROOT_DIR/slurm/train_server.sbatch"
-    CONFIG_PATH="${2:-$ROOT_DIR/configs/server.yaml}"
+    SBATCH_FILE="$ROOT_DIR/slurm/templates/train.sbatch"
+    CONFIG_PATH="${2:-$ROOT_DIR/configs/server/default.yaml}"
     ;;
   eval)
-    SBATCH_FILE="$ROOT_DIR/slurm/eval_real_server.sbatch"
-    CONFIG_PATH="${2:-$ROOT_DIR/configs/server.yaml}"
+    SBATCH_FILE="$ROOT_DIR/slurm/templates/eval_real.sbatch"
+    CONFIG_PATH="${2:-$ROOT_DIR/configs/server/default.yaml}"
     ;;
   *)
     echo "usage: $0 [quickcheck|train|eval] [config_path] [checkpoint_path_for_eval_optional]" >&2
@@ -25,7 +25,7 @@ case "$MODE" in
     ;;
 esac
 
-"$PYTHON_BIN" "$ROOT_DIR/scripts/preflight_server.py" --config "$CONFIG_PATH" --sbatch "$SBATCH_FILE"
+"$PYTHON_BIN" "$ROOT_DIR/scripts/server/preflight.py" --config "$CONFIG_PATH" --sbatch "$SBATCH_FILE"
 
 mkdir -p "$ROOT_DIR/logs"
 
