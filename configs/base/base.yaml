@@ -1,0 +1,15 @@
+# Shared defaults reference for new experiments.
+# Keep environment-specific concrete values in configs/local and configs/server.
+
+experiment:
+  seed: 42
+
+training:
+  checkpoint:
+    dir: ./checkpoints
+    latest_name: latest_checkpoint.pth
+    best_name: best_checkpoint.pth
+    save_every_epochs: 1
+
+evaluation:
+  report_dir: ./artifacts/reports

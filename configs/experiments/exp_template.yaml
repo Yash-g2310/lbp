@@ -1,0 +1,18 @@
+# Example experiment override file.
+# Copy this file and adjust values for each run variant.
+
+experiment:
+  name: exp-template
+
+architecture:
+  base_channels: 64
+  num_sfin: 2
+  num_rhag: 3
+
+training:
+  epochs: 50
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-2
+
+logging:
+  run_name: exp-template
