@@ -39,3 +39,9 @@ scancel <job_id>
 - `slurm/templates/train.sbatch`: `--gres=gpu:1`, `--cpus-per-task=8`, `--mem=32G`, `--time=23:55:00`
 - `slurm/templates/quickcheck.sbatch`: `--gres=gpu:1`, `--cpus-per-task=4`, `--mem=16G`, `--time=00:20:00`
 - `slurm/templates/eval_real.sbatch`: `--gres=gpu:1`, `--cpus-per-task=8`, `--mem=32G`, `--time=23:55:00`
+
+## Runtime Output Paths
+
+- Slurm stdout/stderr defaults to `runs/current/logs/`.
+- Checkpoint defaults are under `runs/current/checkpoints/`.
+- Evaluation reports default to `runs/current/reports/`.
