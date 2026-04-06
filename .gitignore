@@ -1,0 +1,72 @@
+# =============================================================================
+# Python Runtime and Build Artifacts
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# =============================================================================
+# Virtual Environments and Local Env Files
+# =============================================================================
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# =============================================================================
+# Tooling Caches
+# =============================================================================
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# =============================================================================
+# IDE and OS Files
+# =============================================================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# =============================================================================
+# Training Artifacts and Runtime Outputs
+# =============================================================================
+checkpoints/
+artifacts/
+logs/
+wandb/
+local_cache/
+
+# =============================================================================
+# Model and Binary Outputs
+# =============================================================================
+*.pth
+*.pt
+*.bin
+
+
+# =============================================================================
+# Generated Documentation and Context Artifacts
+# =============================================================================
+docs/generated/data_inventory_report.json
+docs/generated/data_truth_report.json
+docs/generated/data_truth_report.md
+
+# Legacy generated report paths kept ignored during migration.
+docs/data_inventory_report.json
+docs/data_truth_report.json
+
+# Generated context snapshots and raw dumps should not be tracked.
+context/generated/*
+!context/generated/README.md
+context/raw/
+context/transcripts/
+context/**/*.log
+
+# Intentionally tracked by policy: configs/local/*.yaml
