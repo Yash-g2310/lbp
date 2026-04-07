@@ -1,13 +1,18 @@
 # Notebook State
 
-Last reviewed: 2026-04-05
+Last reviewed: 2026-04-06
 
 ## Status Summary
 
 | Notebook | Status | Main Risk |
 |---|---|---|
 | `notebooks/experiment1.ipynb` | stale outputs, legacy assumptions | mixed local parquet + HF assumptions |
-| `notebooks/unet_connect.ipynb` | stale outputs, failed runs in prior attempts | dataset streaming/timeouts and incomplete training path |
+| `notebooks/unet_connect.ipynb` | stale outputs, legacy failed attempt traces | dataset streaming/timeouts and incomplete training path |
+
+## Attribution Note
+
+- The prior failed model effort referenced by notebook history was the legacy DINOv2 + SFIN + RHAG U-Net path.
+- It should not be interpreted as a PI-HAF failure.
 
 ## Current Role
 

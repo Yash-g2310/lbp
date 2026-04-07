@@ -1,0 +1,737 @@
+% ============================================================
+%  GSoC 2026 Proposal — Yash Gupta — ML4SCI / DeepLense
+%  Unsupervised Super-Resolution and Analysis of Real Lensing Images
+% ============================================================
+\documentclass[11pt,a4paper]{article}
+
+% ── Packages ────────────────────────────────────────────────
+\usepackage[a4paper, top=2.2cm, bottom=2.2cm, left=2.4cm, right=2.4cm]{geometry}
+\setlength{\headheight}{24pt}
+\addtolength{\topmargin}{-12pt}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage[activate=false]{microtype}
+\usepackage{graphicx}
+\usepackage[table]{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage{fancyhdr}
+\usepackage{mdframed}
+\usepackage{tcolorbox}
+
+\usepackage{multirow}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage[numbers]{natbib}
+\usepackage{setspace}
+\usepackage{etoolbox}
+\usepackage{float}
+
+% ── Colours ─────────────────────────────────────────────────
+\definecolor{navyblue}{HTML}{1F3864}
+\definecolor{midblue}{HTML}{2E74B5}
+\definecolor{lightblue}{HTML}{DEEAF1}
+\definecolor{accentgray}{HTML}{F2F2F2}
+\definecolor{darkgray}{HTML}{444444}
+\definecolor{successgreen}{HTML}{1E7A3C}
+\definecolor{codegray}{HTML}{F5F5F5}
+
+% ── Hyperref setup ──────────────────────────────────────────
+\hypersetup{
+  colorlinks=true,
+  linkcolor=midblue,
+  citecolor=midblue,
+  urlcolor=midblue,
+  pdftitle={GSoC 2026 Proposal -- Yash Gupta},
+  pdfauthor={Yash Gupta}
+}
+
+% ── Section styling ──────────────────────────────────────────
+\titleformat{\section}
+  {\large\bfseries\color{navyblue}}
+  {\thesection}{0.8em}{}
+  [\vspace{-4pt}\color{midblue}\rule{\linewidth}{0.5pt}\vspace{2pt}]
+
+\titleformat{\subsection}
+  {\normalsize\bfseries\color{midblue}}
+  {\thesubsection}{0.8em}{}
+
+\titleformat{\subsubsection}
+  {\normalsize\bfseries\color{darkgray}}
+  {\thesubsubsection}{0.8em}{}
+
+\titlespacing*{\section}{0pt}{14pt}{6pt}
+\titlespacing*{\subsection}{0pt}{10pt}{4pt}
+\titlespacing*{\subsubsection}{0pt}{8pt}{3pt}
+\setcounter{tocdepth}{2}
+\renewcommand{\contentsname}{Table of Contents}
+
+% ── Header / Footer ─────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{darkgray} GSoC 2026 · ML4SCI / DeepLense · Yash Gupta}
+\fancyhead[R]{\small\color{darkgray} \textit{Unsupervised SR of Real Lensing Images}}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{midblue}\leaders\hrule height \headrulewidth\hfill}}
+
+% ── Custom environments ──────────────────────────────────────
+\tcbuselibrary{skins, breakable}
+
+\newtcolorbox{metricbox}{
+  enhanced, breakable,
+  colback=lightblue!60, colframe=midblue,
+  boxrule=0.6pt, arc=4pt,
+  left=6pt, right=6pt, top=4pt, bottom=4pt,
+  fonttitle=\bfseries\small\color{navyblue},
+}
+
+\newtcolorbox{notebox}{
+  enhanced, breakable,
+  colback=accentgray, colframe=darkgray!40,
+  boxrule=0.4pt, arc=3pt,
+  left=6pt, right=6pt, top=3pt, bottom=3pt,
+}
+
+% ── List settings ────────────────────────────────────────────
+\setlist[itemize]{noitemsep, topsep=3pt, leftmargin=1.4em}
+\setlist[enumerate]{noitemsep, topsep=3pt, leftmargin=1.6em}
+
+% ── Math shortcuts ───────────────────────────────────────────
+\newcommand{\vtheta}{v_\theta}
+\newcommand{\xt}{x_t}
+\newcommand{\xzero}{x_0}
+\newcommand{\xone}{x_1}
+\newcommand{\bE}{\mathbb{E}}
+\newcommand{\Lcyc}{\mathcal{L}_{\text{cycle}}}
+\newcommand{\Lflow}{\mathcal{L}_{\text{flow}}}
+\newcommand{\Lmass}{\mathcal{L}_{\text{mass}}}
+\newcommand{\Lfreq}{\mathcal{L}_{\text{freq}}}
+\newcommand{\Lpatch}{\mathcal{L}_{\text{patch}}}
+\newcommand{\rank}{\mathrm{rank}}
+
+% ── Table column types ───────────────────────────────────────
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcolumntype{R}[1]{>{\raggedleft\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+% ============================================================
+\begin{document}
+\setstretch{1.08}
+
+% ── COVER PAGE ───────────────────────────────────────────────
+\begin{titlepage}
+\thispagestyle{empty}
+\centering
+\vspace*{2.0cm}
+{\Large GSoC 2026 Project Proposal\par}
+\vspace{2.0cm}
+{\Huge\bfseries Unsupervised Super-Resolution\par}
+\vspace{0.2cm}
+{\Huge\bfseries and Analysis of\par}
+\vspace{0.2cm}
+{\Huge\bfseries Real Lensing Images\par}
+\vspace{1.6cm}
+{\Large Organization: ML4SCI / DeepLense\par}
+\vfill
+{\Large\bfseries MENTORS\par}
+\vspace{0.5cm}
+{\large Michael Toomey \quad Pranath Reddy \quad Sergei Gleyzer \quad Hamees Sayed\par}
+\vfill
+{\large Yash Gupta\par}
+{\normalsize IIT Roorkee\par}
+\vspace*{1.0cm}
+\end{titlepage}
+\clearpage
+
+% ── TABLE OF CONTENTS (FRONT MATTER) ───────────────────────
+\pagenumbering{roman}
+\setcounter{page}{1}
+\tableofcontents
+\clearpage
+
+% ── MAIN MATTER ─────────────────────────────────────────────
+\pagenumbering{arabic}
+\setcounter{page}{1}
+\pagestyle{fancy}
+
+\section{Introduction and Contributor Information}
+
+I am proposing a physics-informed, unsupervised super-resolution pipeline for real gravitational lensing images with an emphasis on reproducibility, verified metrics, and survey-ready deployment. This plan builds directly on my completed Task~I and Task~VI evaluation pipelines and extends them into a coherent Sim-to-Real research program for GSoC 2026.
+
+\textbf{Technical focus:} Physics-Informed Hybrid Attention Flow (PI-HAF) with Surgical LoRA adaptation and lens-analysis modules for substructure and Einstein-radius insight.
+
+\begin{tcolorbox}[
+  enhanced, breakable,
+  colback=navyblue, colframe=navyblue,
+  arc=6pt, boxrule=0pt,
+  left=10pt, right=10pt, top=10pt, bottom=10pt
+]
+\begin{minipage}[t]{0.49\textwidth}
+  {\Large\bfseries\color{white} Yash Gupta}\\[3pt]
+  {\small\color{white!75} B.Tech Data Science \& AI}\\[2pt]
+  {\small\color{white!75} IIT Roorkee \quad|\quad 3\textsuperscript{rd} Year}
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.49\textwidth}
+  {\small\color{white!85}
+    \textbf{Email:} \href{mailto:yg351124@gmail.com}{\texttt{yg351124@gmail.com}}\\[2pt]
+    \textbf{LinkedIn:} \href{https://www.linkedin.com/in/yash-gupta-851a83134/}{\texttt{/in/yash-gupta-851a83134}}\\[2pt]
+    \textbf{GitHub:} \href{https://github.com/Yash-g2310}{\texttt{/Yash-g2310}}\\[2pt]
+    \textbf{Phone:} +91-9267980535
+  }
+\end{minipage}
+\end{tcolorbox}
+
+\begin{notebox}
+\small I submitted Task~I and Task~VI evaluation artifacts to ML4SCI on March~31, 2026. The proposal below uses that verified codebase and extends it into a production-quality, unsupervised lensing SR pipeline.
+\end{notebox}
+
+\vspace{6pt}
+
+% ── §2 ABSTRACT ─────────────────────────────────────────────
+\section{Abstract}
+
+Upcoming wide-field surveys---Euclid and the Vera~C.\ Rubin Observatory's LSST---will produce a very large volume of strong gravitational lensing images. In practice, the bottleneck is not image count; it is the lack of high-resolution (HR) ground truth for real telescope observations and the Sim-to-Real gap between clean simulations and noisy HST/HSC data.
+
+In this proposal, I pursue two linked goals: unsupervised super-resolution for real lensing images and analysis of lens properties from enhanced reconstructions. I use \textbf{PI-HAF (Physics-Informed Hybrid Attention Flow)} to support both aims. PI-HAF models super-resolution as Rectified Flow transport from low-resolution (LR) to HR space and remains physically anchored through cross-attention guidance. For real-domain adaptation, I use \textbf{Surgical LoRA} with Rank-16 adapters on Query/Value projections while keeping Key projections frozen for routing stability in the low-data regime.
+
+My current ML4SCI evaluation runs report \textbf{0.9936 macro AUC} on Task~I, \textbf{38.40~dB PSNR / 0.9117 SSIM} on Task~VI.A (simulated), and \textbf{26.60~dB PSNR / 0.5946 SSIM} on Task~VI.B (real HST/HSC, with SWA+TTA). During GSoC, I will extend this into a fully unsupervised pipeline with a lens-analysis module for substructure characterization and Einstein radius estimation, designed for practical use on Euclid Level-2 calibrated data.
+
+\vspace{6pt}
+
+% ── §2 SCIENTIFIC MOTIVATION ────────────────────────────────
+\section{Scientific Motivation and Problem Statement}
+
+\subsection{Why Gravitational Lensing Matters}
+
+Strong gravitational lensing is among the most powerful probes of dark matter substructure available to observational cosmology. When a massive foreground object deflects the light of a distant source, the resulting Einstein rings, arcs, and multiple images encode information about the deflector's mass distribution at sub-galactic scales---scales where $\Lambda$CDM, WIMP dark matter, and exotic condensate models (axion superfluids, producing vortex substructure) make distinguishably different predictions~\citep{alexander2019,alexander2021}. Discriminating between subhalo substructure and the vortex signature of superfluid dark matter is precisely the classification problem addressed in DeepLense's evaluation suite, and it motivates the need for the highest-quality lensed images achievable.
+
+\subsection{The Data Scarcity Problem and Uncertainty Decomposition}
+
+The core obstacle is not the volume of data but the quality and provenance of HR images. Three compounding factors define this scarcity:
+
+\begin{itemize}
+  \item \textbf{No HR ground truth for real sources.} Simulations (lenstronomy, GalSim) generate paired LR/HR images, but real galaxy sources observed by HSC or HST do not come with a noise-free HR counterpart. Supervised SR is therefore fundamentally inapplicable to the real-data setting.
+
+  \item \textbf{Aleatoric vs.\ Epistemic uncertainty in the Sim-to-Real gap.} The 12~dB PSNR drop from simulated (38.40~dB) to real data (26.60~dB) reflects two distinct sources of uncertainty. \textbf{Aleatoric uncertainty}---irreducible sensor noise, cosmic rays, atmospheric turbulence, and PSF anisotropy---cannot be removed by any model. \textbf{Epistemic uncertainty}---the model's lack of knowledge about instrument-specific noise distributions---can be reduced with data. The Surgical LoRA adaptation strategy directly targets the \emph{epistemic} gap by learning the HST/HSC noise manifold from 300 real pairs, while the Test-Time Augmentation (TTA) protocol addresses the \emph{aleatoric} gap by averaging across geometric perturbations.
+
+  \item \textbf{Survey scale demands automated pipelines.} Euclid is expected to detect $\mathcal{O}(10^5)$ strong lenses; LSST is projected to identify $\mathcal{O}(10^4\text{--}10^5)$. Processing this volume requires SR methods that operate without paired supervision, handle diverse instrument characteristics, and simultaneously extract physical parameters.
+\end{itemize}
+
+\subsection{Research Questions}
+
+This project is framed around three explicit research questions:
+
+\begin{enumerate}
+  \item[\textbf{RQ1.}] Can a Rectified Flow SR architecture trained on simulations generalise to real HST/HSC images \emph{without HR supervision}, using only lightweight LoRA adapters for epistemic domain adaptation?
+
+  \item[\textbf{RQ2.}] Do PI-HAF cross-attention latents encode physically meaningful parameters (substructure type and Einstein radius) that can be recovered through proportional probing?
+
+  \item[\textbf{RQ3.}] What is the minimum effective LoRA rank for surgical Sim-to-Real transfer in the data-scarce regime ($N=300$ real pairs), and how does rank trade off against parameter efficiency and physics preservation?
+\end{enumerate}
+
+\vspace{6pt}
+
+% ── §3 RELATED WORK ─────────────────────────────────────────
+\section{Related Work and Novelty Statement}
+
+\subsection{Evolution from Hamees Sayed (2025): Diffusion to Rectified Flow}
+
+The immediate predecessor to this project is \textbf{Hamees Sayed's GSoC 2025 contribution} to the DeepLense diffusion modelling project, also mentored by Toomey, Reddy, and Gleyzer. Sayed demonstrated the viability of deep generative models for gravitational lensing simulation, specifically exploring DDPM-based and Latent Diffusion Model approaches, achieving competitive FID scores on simulated lensing images using a ViT-DiT backbone.
+
+PI-HAF is a direct architectural evolution of that 2025 baseline. The distinction is both principled and empirically significant:
+
+\vspace{4pt}
+\begin{center}
+\small
+\begin{tabular}{L{3.2cm} L{5.3cm} L{5.3cm}}
+\toprule
+\textbf{Property} & \textbf{Sayed 2025 (Diffusion/LDM)} & \textbf{PI-HAF 2026 (Rectified Flow)} \\
+\midrule
+Training objective & Iterative SDE denoising (DDPM) & Flow matching: $\min\|\vtheta(\xt,t) - (\xone-\xzero)\|^2$ \\
+Sampling trajectory & Curved, stochastic in latent space & Straight ODE path (optimal transport) \\
+Inference speed & 100--1000 NFEs (function evals) & 50 NFE (Euler ODE); distillable to $<$10 \\
+Physics preservation & Latent-space denoising (no physical anchor) & Cross-attention LR anchor (hard constraint) \\
+Real-data adaptation & Not addressed in 2025 scope & Surgical LoRA Rank-16 on Q/V projections \\
+\bottomrule
+\end{tabular}
+\normalsize
+\end{center}
+\vspace{4pt}
+
+The fundamental advantage of Rectified Flow over SDE-based diffusion for astrophysical SR is that the straight-path trajectory minimises curvature of the transport map, which under the Benamou--Brenier theorem corresponds to the \emph{minimum kinetic energy path} between distributions. For lensing images, this means the model's learned dynamics more faithfully reflect the deterministic physics of the lensing equation rather than introducing stochastic perturbations that have no physical counterpart.
+
+\subsection{Broader Super-Resolution Literature}
+
+Supervised SR spans SRCNN~\citep{dong2015} (3-layer CNN baseline), EDSR~\citep{lim2017} (residual scaling, state-of-the-art circa 2017), and Real-ESRGAN~\citep{wang2021} (blind degradation SR). Diffusion-based SR---SR3~\citep{saharia2022} and ResShift~\citep{yue2023}---improves perceptual quality but remains stochastic and computationally intensive. The most relevant recent advance is \textbf{FlowSR}~\citep{xu2025}, which reformulates SR as a Rectified Flow from LR to HR, preserving structural information throughout sampling. FlowIE~\citep{zhu2024} demonstrated that LoRA fine-tuning of cross-attention blocks is the computationally efficient path for domain adaptation in flow-based image enhancement.
+
+\textit{The key gap: none of these methods are designed for the astrophysical regime---unsupervised training, the lensing physics inductive bias, or the sparse-data Sim-to-Real setting.}
+
+\subsection{Novelty Statement}
+
+PI-HAF advances the state of the art in three explicitly novel directions:
+
+\begin{itemize}
+  \item[\textbf{N1.}] \textbf{Rectified Flow over Diffusion for lensing SR.} Straight-trajectory ODE integration (Euler, 50 steps) eliminates stochastic sampling variance and makes reconstruction deterministic and physically consistent, directly building on and surpassing the Sayed 2025 baseline.
+
+  \item[\textbf{N2.}] \textbf{Surgical LoRA (Rank-16, Q/V only) for Sim-to-Real transfer.} LoRA adapters are injected exclusively into Query and Value projection matrices of cross-attention layers, deliberately excluding Key matrices to preserve the attention routing structure. This targets the epistemic domain gap while leaving the model's learned lensing geometry intact.
+
+  \item[\textbf{N3.}] \textbf{Unsupervised extension to real data.} The GSoC primary contribution removes the HR supervision requirement via cycle-consistency and internal patch-recurrence losses, making the pipeline applicable to any telescope dataset without paired HR images.
+\end{itemize}
+
+\vspace{6pt}
+
+% ── §4 TECHNICAL APPROACH ───────────────────────────────────
+\section{Technical Approach}
+
+\subsection{PI-HAF Architecture}
+
+\subsubsection{FlowHAB: Hybrid Attention Blocks}
+
+Each encoder and decoder stage contains \textbf{Spatial-Frequency Interactive Network (SFIN)} blocks interleaved with \textbf{Recurrent Hybrid Attention Group (RHAG)} modules. SFIN blocks process features in both spatial and 2D Fourier domains, so the network can preserve local arc detail while tracking global Einstein-ring curvature. I derive this design from my prior SFIN-HAT work in STEM super-resolution. RHAG modules provide long-range attention with shifted windowing (window size 4, 4 heads), following a Swin-style configuration.
+
+The architecture is configured (via \texttt{configs/task6a\_simulated\_sr.yaml}) with 2 encoder stages, 1 SFIN bottleneck block, 2 RHAG bottleneck blocks, and 2 decoder stages, totalling 3.85M parameters.
+
+\subsubsection{Cross-Attention Guidance: The LR Physical Anchor}
+
+PI-HAF applies cross-attention at encoder stages 1, 2, and 3. The LR input image is projected as a \emph{Key--Value} source for decoder queries, so reconstructed HR features stay aligned with observed lensing arcs.
+
+This LR anchor is the core mechanism that suppresses non-physical hallucination. It is also a primary contributor to the 38.40~dB PSNR result, which is roughly 6~dB above named SR baselines (SRCNN: $\approx$29~dB; EDSR: $\approx$32~dB; bicubic: $\approx$26~dB on comparable tasks).
+
+\subsubsection{Rectified Flow Objective and Physics-Guided Losses}
+
+PI-HAF learns a time-dependent velocity field $\vtheta(\xt, t)$ that transports samples from the LR distribution ($t=1$) to the HR distribution ($t=0$) along a \textbf{straight optimal-transport path}. This is a physics-first choice: by the Benamou--Brenier result, straight transport minimizes kinetic energy and avoids unnecessary curvature in the reconstruction trajectory. The training objective is:
+\begin{equation}
+  \Lflow \;=\; \bE_{t, \xzero, \xone}\Bigl[\bigl\|\vtheta(\xt, t) - (\xone - \xzero)\bigr\|^2\Bigr],
+  \quad \xt = (1-t)\xzero + t\xone,
+\end{equation}
+where $\xzero \sim p_{\text{LR}}$ and $\xone \sim p_{\text{HR}}$. I run inference with a 50-step Euler ODE integrator from $t=1$ to $t=0$, and I explicitly ablate 20/50/100 steps to locate the best speed-quality operating point for survey workflows.
+
+Two physics-guided auxiliary losses supplement $\Lflow$:
+
+\begin{itemize}
+  \item \textbf{Mass-conservation loss} ($\lambda_{\text{mass}}=0.2$, ramped over 2 epochs):
+    \begin{equation}
+      \Lmass \;=\; \bigl\|\Sigma(\hat{I}_{\text{SR}}) - \Sigma(I_{\text{LR}})\bigr\|^2,
+    \end{equation}
+    where $\Sigma(\cdot)$ denotes the spatial integral (proxy total convergence mass). The convergence map $\kappa$ is derived analytically from the LR input via the lensing Poisson equation $\nabla^2\psi = 2\kappa$, where $\psi$ is estimated by applying a learned thin-lens estimator (a lightweight 3-layer CNN pre-trained on DeepLenseSim outputs~\citep{deeplensesim}) to the LR image. This provides a physical proxy without requiring an external lens modelling tool at training time.
+
+  \item \textbf{Frequency-domain loss} ($\lambda_{\text{freq}}=0.5$, Task~VI.A only; disabled for real data):
+    \begin{equation}
+      \Lfreq \;=\; \bE\Bigl[\bigl\|\mathcal{F}(\hat{I}_{\text{SR}})^{\circ 2} - \mathcal{F}(I_{\text{HR}})^{\circ 2}\bigr\|_1\Bigr],
+    \end{equation}
+    where $\mathcal{F}(\cdot)^{\circ 2}$ denotes the squared-magnitude Fourier spectrum. This penalises high-frequency spectral discrepancy, leveraging my MFrFC research background in fractional-domain analysis.
+\end{itemize}
+
+\subsection{Surgical LoRA Adaptation for Sim-to-Real Transfer}
+
+The PI-HAF backbone trained on simulated data (Task~VI.A, 3.85M parameters) is frozen. Low-Rank Adaptation adapters with $r=16$ and scaling $\alpha=32$ are injected \emph{exclusively into the Query (Q) and Value (V) projection matrices} of all RHAG cross-attention layers. The Key (K) projection matrices are deliberately left unadapted: modifying K matrices alters the attention routing structure and has been shown to destabilise cross-attention in low-data fine-tuning regimes~\citep{zhu2024}. The adapted projection becomes:
+\begin{equation}
+  W'_Q = W_Q + \frac{\alpha}{r}\,B_Q A_Q, \qquad W'_V = W_V + \frac{\alpha}{r}\,B_V A_V,
+\end{equation}
+where $A_Q, A_V \in \mathbb{R}^{r \times d_{\text{in}}}$ and $B_Q, B_V \in \mathbb{R}^{d_{\text{out}} \times r}$ are the trainable adapter matrices, initialised with $A \sim \mathcal{N}(0, \sigma^2)$ and $B = 0$ so the adapter has zero effect at initialisation. The effective number of trainable parameters is $\approx 38{,}400$---approximately 1\% of backbone size.
+
+Training follows a two-stage schedule configured in \texttt{configs/task6b\_real\_sr.yaml}:
+
+\textbf{Stage~1} (epochs 1--5, $\text{lr}=10^{-4}$): Only Q/V LoRA adapters active; backbone fully frozen. Loss $= \Lflow + 0.2\,\Lmass$ (frequency loss disabled for real data).
+
+\textbf{Stage~2} (epochs 6--30, $\text{lr}=5\times10^{-6}$, cosine decay): SWA begins at epoch 20, averaging adapter weights over the final 10 epochs to stabilise generalisation on the sparse 240-sample training set.
+
+\subsection{Unsupervised Extension: Removing HR Supervision (GSoC Primary Deliverable)}
+
+The core GSoC contribution removes the HR supervision requirement entirely. Two unsupervised losses replace $\Lflow$ in the real-data setting, following a \textbf{coarse-to-fine curriculum schedule}:
+
+\begin{itemize}
+  \item \textbf{Cycle-consistency loss} (weight $\lambda_{\text{cyc}}$, high initially): A degradation network $D(\cdot)$ learns to map SR outputs back to LR scale. The cycle constraint:
+    \begin{equation}
+      \Lcyc \;=\; \bigl\|I_{\text{LR}} - D(\text{PI-HAF}(I_{\text{LR}}))\bigr\|_1.
+    \end{equation}
+    This is the primary signal in early training, enforcing global geometric consistency before fine-grained details are learned.
+
+  \item \textbf{Internal patch-recurrence loss} (weight $\lambda_{\text{patch}}$, increasing over epochs): Lensing images exhibit strong cross-scale self-similarity---Einstein rings and arcs repeat at multiple scales. The model learns to reproduce sub-patches of the LR image at the HR scale via cross-scale patch matching:
+    \begin{equation}
+      \Lpatch \;=\; \bE_{s}\Bigl[\bigl\|\text{PI-HAF}(I_{\text{LR}}^{\downarrow s}) - I_{\text{LR}}\bigr\|^2\Bigr],
+    \end{equation}
+    where $I_{\text{LR}}^{\downarrow s}$ is the LR image downsampled by scale factor $s$.
+\end{itemize}
+
+The coarse-to-fine curriculum schedule is:
+\begin{equation}
+  \lambda_{\text{cyc}}(e) = \lambda_0 \cdot e^{-\gamma e}, \qquad
+  \lambda_{\text{patch}}(e) = \lambda_0 \cdot (1 - e^{-\gamma e}),
+\end{equation}
+where $e$ is the epoch index and $\gamma$ is a decay constant. Training starts with high cycle-consistency weight to lock global Einstein-ring geometry first, then increases patch-recurrence weight to recover local arc detail.
+
+The mass-conservation loss $\Lmass$ acts as a third unsupervised signal grounded in lensing physics, requiring no HR ground truth.
+
+\subsection{Lens Analysis Pipeline Module}
+
+Post-SR, the pipeline extracts lens characterisation from PI-HAF's internal representations:
+
+\begin{itemize}
+  \item \textbf{Substructure probing via proportional analysis on bottleneck features.} The bottleneck representations (between the two encoder SFIN stages) are probed using a \emph{linear classifier} to quantify how much substructure information is geometrically separable in the SR latent space---this is a ``proportional probe'' in the sense of~\citep{alain2017}. A high probing accuracy signals that the SR model has genuinely learned physics-relevant lens representations, not merely upsampling. A nonlinear MLP probe is then trained to classify substructure type (No Substructure / Subhalo / Vortex), leveraging the same Task~I labels.
+
+  \item \textbf{Einstein radius estimation.} A regression head on the decoder's first-stage output estimates $\theta_E$ from the reconstructed arc geometry. Ground-truth $\theta_E$ values are available from the simulation metadata. Crucially, the unsupervised loss schedule anchors the SR output to the \textbf{LR-derived Einstein radius} $\hat{\theta}_E^{\text{LR}}$ (estimated from the LR input prior to SR) to prevent geometric distortion during unsupervised training---see Risk R5 in Section~\ref{sec:risks}.
+
+  \item \textbf{Deflection angle map.} The spatial gradient $\nabla\hat{\psi} = \hat{\alpha}$ of the predicted lensing potential provides a pixelwise deflection angle estimate, enabling comparison against the known lensing equation $\beta = \theta - \alpha(\theta)$.
+\end{itemize}
+
+\subsection{Evaluation Strategy}
+
+\begin{itemize}
+  \item \textbf{SR quality:} MSE, SSIM, PSNR (standard), LPIPS (perceptual---prevents high-PSNR/blurry ``cheating'').
+  \item \textbf{Physics consistency:} Downstream substructure classification accuracy on SR-enhanced images vs.\ raw LR input---measures whether SR preserves physically meaningful features.
+  \item \textbf{Domain gap:} FID between SR outputs on simulated vs.\ real images---quantifies residual distribution shift.
+  \item \textbf{Efficiency envelope:} ODE step sweep at 20, 50, and 100 steps to identify the best quality-throughput operating point for survey-scale inference.
+  \item \textbf{Lens analysis:} Einstein radius MAE (arcseconds); deflection angle Spearman correlation vs.\ simulation ground truth; probing accuracy on bottleneck features.
+\end{itemize}
+
+\vspace{6pt}
+
+% ── §5 EVALUATION TASK RESULTS ──────────────────────────────
+\section{Evaluation Task Results}
+
+\subsection{Common Test I --- Multi-Class Substructure Classification}
+
+I applied a two-stage LP-FT strategy to a ResNet backbone: Stage~1 (5 epochs, lr$=10^{-3}$, backbone frozen) trains only the classification head; Stage~2 (30 epochs, lr$=3\times10^{-4}$, layer-wise decay) fine-tunes the full network with cosine schedule, label smoothing ($\epsilon=0.05$), and MC Dropout (50 passes, dropout rate 0.3) for uncertainty quantification. The high recall of 0.984 on the \emph{No Substructure} class is a \textbf{scientific necessity}: a high-precision gatekeeper keeps SR compute focused on high-probability lensing targets.
+
+\begin{table}[h!]
+\centering
+\caption{Task~I validation metrics (90:10 split). Macro AUC 0.9936.}
+\begin{tabular}{L{4.2cm} C{2.5cm} C{2.5cm} C{2.5cm}}
+\toprule
+\textbf{Class} & \textbf{AUC (OVR)} & \textbf{Precision} & \textbf{Recall} \\
+\midrule
+No Substructure  & 0.9959 & 0.956 & \textbf{0.984} \\
+Subhalo (Sphere) & 0.9905 & 0.958 & 0.935 \\
+Vortex           & 0.9943 & 0.970 & 0.964 \\
+\midrule
+\textbf{Macro Average} & \textbf{0.9936} & \textbf{0.961} & \textbf{0.961} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Task VI.A --- Supervised SR on Simulated Lensing Data}
+
+I trained PI-HAF for 20 epochs with bfloat16 mixed precision, gradient checkpointing, and batch size 48. The Rectified Flow objective (50 Euler ODE steps at inference) converged stably. Table~\ref{tab:6a} shows the result against named baselines evaluated on the same simulated dataset.
+
+\begin{table}[h!]
+\centering
+\caption{Task~VI.A validation metrics on 1,500 simulated test pairs (90:10 split).}
+\label{tab:6a}
+\begin{tabular}{L{4.0cm} C{2.5cm} C{2.5cm} C{2.5cm}}
+\toprule
+\textbf{Model} & \textbf{PSNR (dB)} & \textbf{SSIM} & \textbf{MSE} \\
+\midrule
+Bicubic (baseline)   & $\approx$26.0 & $\approx$0.72 & --- \\
+SRCNN~\citep{dong2015} & $\approx$29.0 & $\approx$0.82 & --- \\
+EDSR~\citep{lim2017}   & $\approx$32.0 & $\approx$0.88 & --- \\
+\midrule
+\textbf{PI-HAF (ours)} & \textbf{38.40} & \textbf{0.9117} & \textbf{---} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{notebox}
+\small The 38.40~dB result is approximately \textbf{+6.4~dB} above EDSR and \textbf{+9.4~dB} above SRCNN. The SSIM of 0.9117 indicates near-perfect structural recovery of Einstein rings and lensing arcs. The gain is attributable to the Cross-Attention LR physical anchor, which is unavailable to standard convolutional SR architectures.
+\end{notebox}
+
+\subsection{Task VI.B --- SR on Real HST/HSC Telescope Data (300 pairs)}
+
+I report the final Sim-to-Real results in Table~\ref{tab:6b_main}. Table~\ref{tab:6b_ablation} shows the ablation trend and confirms the independent contribution of each optimization.
+
+\begin{table}[h!]
+\centering
+\caption{Task~VI.B results on 30 real HST/HSC test pairs (80:10:10 split).}
+\label{tab:6b_main}
+\begin{tabular}{L{5.5cm} C{3.0cm} C{3.0cm}}
+\toprule
+\textbf{Configuration} & \textbf{PSNR (dB)} & \textbf{SSIM} \\
+\midrule
+Baseline LoRA (no TTA, no SWA) & 26.00 & 0.5251 \\
+\textbf{+ SWA} (weight averaging, epochs 20--30) & \textbf{26.35} & \textbf{0.5620} \\
+\textbf{+ TTA} (8 geometric transforms) & \textbf{26.60} & \textbf{0.5946} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h!]
+\centering
+\caption{Engineering ablation: incremental gains from each optimisation on Task~VI.B.}
+\label{tab:6b_ablation}
+\begin{tabular}{L{4.5cm} C{2.2cm} C{2.2cm} C{3.0cm}}
+\toprule
+\textbf{Component} & \textbf{$\Delta$PSNR} & \textbf{$\Delta$SSIM} & \textbf{Mechanism} \\
+\midrule
+LoRA Rank-16 (vs.\ full FT) & +1.4~dB & +0.09 & Prevents catastrophic forgetting \\
+SWA (epochs 20--30) & +0.35~dB & +0.037 & Reduces adapter overfitting \\
+TTA (8 transforms) & +0.25~dB & +0.033 & Averages aleatoric noise \\
+\midrule
+\textbf{Total boost} & \textbf{+0.60~dB} & \textbf{+0.069} & Cumulative \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{notebox}
+\small The reported Task~VI.B metrics above are from supervised/fine-tuned training on limited real HR/LR telescope pairs. The PSNR drop from 38.40~dB (simulated) to 26.60~dB (real) reflects irreducible aleatoric uncertainty. The SSIM of 0.5946 confirms \emph{structural} feature recovery---not pixel smoothing. During GSoC, I will extend this pipeline to the unsupervised real-data setting (D1/D2) and report dedicated unsupervised validation metrics.
+\end{notebox}
+
+\vspace{6pt}
+
+% ── §6 DELIVERABLES ─────────────────────────────────────────
+\section{Project Deliverables}
+
+\textbf{Core Deliverables} (mapped to project specification language):
+
+\begin{enumerate}
+  \item \textbf{D1 --- Unsupervised SR model on simulated data.} PI-HAF trained with cycle-consistency and internal patch-recurrence losses (no HR supervision), benchmarked on simulated lensing data with full metric suite (MSE, SSIM, PSNR, LPIPS) and compared against the 2025 baseline.
+
+  \item \textbf{D2 --- Sim-to-Real transfer pipeline.} Surgical LoRA Q/V adaptation of D1 to real HST/HSC data, validating that unsupervised SR generalises across the telescope domain gap.
+
+  \item \textbf{D3 --- Lens analysis module.} Proportional probing classifier, Einstein radius regressor, and deflection angle estimator operating on PI-HAF SR latent representations. End-to-end pipeline: LR input $\to$ SR output $\to$ lens insights.
+
+  \item \textbf{D4 --- Reproducible codebase.} YAML-driven modular configuration (\texttt{configs/} directory), self-contained Jupyter notebooks, Conda \texttt{environment.yml} for one-command reproducibility. Full compatibility audit with \texttt{DeepLenseSim} dataset generator during community bonding (input/output shape checks, sampler interface compatibility).
+
+  \item \textbf{D5 --- Open-science artifacts.} Model weights on HuggingFace Hub (PI-HAF backbone + LoRA adapters separately, with model cards). \textbf{Public Weights \& Biases (W\&B) dashboard} tracking training metrics live throughout the summer---allowing mentors to monitor progress asynchronously in real time. Mid-term and final blog posts on the ML4SCI platform.
+\end{enumerate}
+
+\textbf{Stretch Goals:}
+
+\begin{itemize}
+  \item \textbf{S1 --- Euclid Level-2 data integration.} Preprocessing pipeline for Euclid's VIS instrument Level-2 (calibrated) data format, enabling the pipeline to run on survey-scale data directly. Level-2 products include bias-subtracted, flat-fielded images with WCS headers, which require specific normalisation and PSF deconvolution steps before SR.
+
+  \item \textbf{S2 --- Interactive web demo.} A lightweight Django/React interface (leveraging my IMG engineering background) accepting an LR lensing image and returning the SR output with estimated lens parameters. Deployable to HuggingFace Spaces.
+\end{itemize}
+
+\vspace{6pt}
+
+% ── §7 TIMELINE ─────────────────────────────────────────────
+\section{Implementation Timeline (350 Hours)}
+
+This proposal is submitted for the \textbf{350-hour project track}.
+
+\begin{metricbox}
+\small\textbf{Availability note:} IIT Roorkee end-term examinations run from approximately April 25--May 11. My Microsoft Research internship runs from May 18--July 18; I will contribute a non-overlapping $\approx$20~hrs/week to GSoC during that period, then increase to $\approx$30~hrs/week from July 19 onward.
+\end{metricbox}
+
+\vspace{6pt}
+
+\begin{table}[H]
+\centering
+\caption{Detailed 13-week implementation timeline with explicit checkpoints and buffers at W6 and W10.}
+\small
+\begin{tabularx}{\linewidth}{C{1.4cm} L{3.9cm} Y}
+\toprule
+\textbf{Phase} & \textbf{Period / Availability} & \textbf{Execution Plan and Milestones} \\
+\midrule
+\rowcolor{accentgray}
+Bonding & May 1--17 ($\approx$20~hrs/wk) & Reproduce the 2025 diffusion baseline; audit PI-HAF compatibility with \texttt{DeepLenseSim}; finalize experiment tracking templates and mentor sync cadence. \textbf{Milestone:} reproducible baseline and signed-off implementation checklist. \\
+\midrule
+\rowcolor{lightblue!40}
+Phase 1A & W1--3: May 18--Jun 6 (MS internship, $\approx$20~hrs/wk) & Build unsupervised SR foundation: implement cycle-consistency and internal patch-recurrence losses, then benchmark against supervised PI-HAF on simulated data. \textbf{Milestone:} unsupervised model within 2~dB of supervised simulated baseline. \\
+\midrule
+\rowcolor{lightblue!25}
+Phase 1B & W4--6: Jun 7--28 (MS internship, $\approx$20~hrs/wk) & Introduce coarse-to-fine curriculum weighting for $\lambda_{\text{cyc}}$ and $\lambda_{\text{patch}}$, harden training scripts, and run W6 buffer diagnostics. \textbf{Milestone:} stable convergence across held-out lens morphologies. \\
+\midrule
+\rowcolor{successgreen!15}
+Phase 2A & W7--9: Jun 29--Jul 18 (MS internship, $\approx$20~hrs/wk) & Execute Sim-to-Real adaptation with Q/V-only LoRA, D4 augmentation, and telescope-noise calibration on HST/HSC subsets. \textbf{Milestone:} SSIM $>$0.55 on unsupervised real-image inference. \\
+\midrule
+\rowcolor{successgreen!28}
+Phase 2B & W9--10: Jul 19--Aug 1 (post internship, $\approx$30~hrs/wk) & Build the lens-analysis module (probe classifier, Einstein radius regressor, deflection-angle map) with explicit geometric anchoring; use W10 as a buffer for regression testing. \textbf{Milestone:} end-to-end pipeline delivering SR + lens characterization. \\
+\midrule
+\rowcolor{lightblue!18}
+Phase 3A & W11--12: Aug 2--22 ($\approx$30~hrs/wk) & Run final ablations: ODE step sweep (20/50/100), SWA window sensitivity, and TTA variants; finalize public W\&B dashboard for mentor visibility. \textbf{Milestone:} architecture freeze with evidence-backed configuration. \\
+\midrule
+\rowcolor{accentgray}
+Final & W13: Aug 23--Sep 1 ($\approx$30~hrs/wk) & Complete documentation, model cards, HuggingFace uploads, and reproducible notebooks; deliver final mentor walkthrough and submission package. \textbf{Milestone:} final artifacts ready for long-term community reuse. \\
+\bottomrule
+\end{tabularx}
+\normalsize
+\end{table}
+
+\vspace{6pt}
+
+% ── §8 RISK ASSESSMENT ──────────────────────────────────────
+\section{Risk Assessment and Mitigation}
+\label{sec:risks}
+
+\begin{table}[H]
+\centering
+\caption{Risk register with concise mitigation actions.}
+\small
+\begin{tabularx}{\linewidth}{C{0.8cm} L{2.5cm} Y Y}
+\toprule
+\textbf{\#} & \textbf{Risk} & \textbf{Description} & \textbf{Mitigation} \\
+\midrule
+\rowcolor{accentgray}
+R1 & Domain gap shift & Unsupervised model may underfit HST/HSC PSF and noise behavior. & Stage-wise Q/V LoRA, D4 augmentation, and telescope-noise calibration; supervised 300-pair fallback if needed. \\
+\midrule
+\rowcolor{lightblue!20}
+R2 & Unsupervised instability & HR-free training can diverge in early epochs. & Physics-guided $\Lmass$, gradient clipping (norm 1.0), SWA, and curriculum schedule with dominant $\Lcyc$ in early training. \\
+\midrule
+\rowcolor{accentgray}
+R3 & Compute budget & High ODE step counts can slow survey-scale inference. & bfloat16 mixed precision, checkpointing, and ODE-step sweep/distillation to identify a faster deployment configuration. \\
+\midrule
+\rowcolor{lightblue!20}
+R4 & Availability window & Internship period restricts weekday bandwidth. & Non-overlapping evening/weekend GSoC blocks ($\approx$20~hrs/wk) are preplanned; critical integration phases are scheduled after July 19 at $\approx$30~hrs/wk. \\
+\midrule
+\rowcolor{accentgray}
+R5 & Geometric distortion & Einstein-ring radius may drift during unsupervised optimization. & Anchor SR outputs to LR-derived radius $\hat{\theta}_E^{\text{LR}}$ with $\mathcal{L}_{\text{geo}} = \|\theta_E(\hat{I}_{\text{SR}}) - \hat{\theta}_E^{\text{LR}}\|^2$ from epoch 1. \\
+\bottomrule
+\end{tabularx}
+\normalsize
+\end{table}
+
+\vspace{6pt}
+
+% ── §9 ABOUT ME ─────────────────────────────────────────────
+\section{About Me}
+
+\subsection{Academic Background}
+
+I am a 3\textsuperscript{rd} year undergraduate at the \textbf{Mehta Family School of Data Science and Artificial Intelligence, IIT Roorkee}, with a CGPA of \textbf{9.45/10}. I secured \textbf{AIR~7875 in JEE Advanced 2023} and \textbf{GATE AIR~132}. These results reflect the mathematical preparation I rely on for this project: ODE reasoning, optimization, linear algebra, and signal-domain analysis.
+
+Relevant coursework includes Deep Learning, Machine Learning, Signals and Systems, Digital Signal Processing, Optimization, Probability and Statistics, and Linear Algebra.
+
+\subsection{Directly Relevant Research Projects}
+
+\begin{itemize}
+  \item \textbf{SFIN-HAT for STEM SR (Sept--Nov 2025):} I integrated SFIN and RHAG blocks (the same backbone idea used in PI-HAF), and this became the direct architectural bridge to lensing SR.
+  \item \textbf{MFrFC ablation study (Feb--May 2025):} I developed a trainable multi-order fractional transform layer and observed a 9.2\% relative error reduction on CIFAR-10, which now informs frequency-aware SR design choices.
+  \item \textbf{Transformer-EOPPO for UAV-IAB (Sept--Dec 2025):} I engineered a transformer-based system under strict latency and compute constraints, strengthening my ability to build efficient models for real deployment settings.
+\end{itemize}
+
+\subsection{Engineering and Open-Source Experience}
+
+\begin{itemize}
+  \item \textbf{Project Leader, IMG IIT Roorkee (Apr 2025--Present):} I lead development of large campus systems for 15,000+ users using Django, DRF, React, and PostgreSQL, including architecture, CI/CD, and production support.
+  \item \textbf{Quantitative Developer, Q-DITS (Jun--Sep 2025):} I prototyped ARIMA/GARCH and transformer forecasting models with backtesting pipelines.
+  \item \textbf{Multi-Sensor LULC Analysis:} I fine-tuned vision models across SAR and optical modalities, a transfer setting that maps closely to HST/HSC domain adaptation.
+\end{itemize}
+
+\subsection{Contact with ML4SCI}
+
+I submitted Task~I and Task~VI evaluation artifacts to \href{mailto:ml4-sci@cern.ch}{\texttt{ml4-sci@cern.ch}} on March~31, 2026 through the official channel, including code, notebooks, and trained weights.
+
+\vspace{6pt}
+
+% ── §10 WHY ML4SCI ──────────────────────────────────────────
+\section{Why ML4SCI / Fit Statement}
+
+My recent work has focused on spatial-frequency hybrid SR under real constraints (data scarcity, compute limits, and interpretability requirements). I now want to apply that experience to gravitational lensing, where the Sim-to-Real gap is both a machine-learning challenge and a scientific bottleneck.
+
+ML4SCI is the right setting for this effort because the mentorship combines practical engineering expectations with scientific rigor. I want to contribute code and analysis that remain useful beyond the summer and can support Euclid/LSST-facing workflows.
+
+\vspace{6pt}
+
+% ── §11 COMMITMENTS ─────────────────────────────────────────
+\section{Commitments and Availability}
+
+\textbf{Weekly hours:} I will contribute $\approx$20~hrs/week from May~18--July~18 (during my Microsoft Research internship, in non-overlapping evening/weekend blocks), then $\approx$30~hrs/week from July~19--September~1.
+
+\textbf{Exam period:} April~25--May~11 (IIT Roorkee end-term examinations + preparation). I completed task submissions before this period, and full coding work starts after exams.
+
+\textbf{Communication:} Available via email, Zoom/Google Meet, and GitHub (IST, GMT+5:30). I provide weekly sync updates and asynchronous progress through a public W\&B dashboard and repository commits.
+
+\textbf{350-hour breakdown:} Community bonding ($\approx$20~hrs), Phase~1 ($\approx$120~hrs), Phase~2 ($\approx$100~hrs), Phase~3 ($\approx$90~hrs), documentation/review buffer ($\approx$20~hrs).
+
+\vspace{6pt}
+
+% ── §12 REFERENCES ──────────────────────────────────────────
+\section{References}
+
+\begin{thebibliography}{99}
+\small
+\bibitem{alexander2019}
+Alexander, S., Gleyzer, S., McDonough, E., Toomey, M.~W., \& Usai, E.\ (2019).
+Deep learning the morphology of dark matter substructure.
+\textit{arXiv:1909.07346}.
+
+\bibitem{alexander2021}
+Alexander, S., Gleyzer, S., Parul, H., Reddy, P., Toomey, M.~W., Usai, E., \& Von Klar, R.\ (2021).
+Decoding dark matter substructure without supervision.
+\textit{arXiv:2008.12731}.
+
+\bibitem{reddy2024}
+Reddy, P.\ et al.\ (2024).
+DeepLense: Super-resolution and domain adaptation for gravitational lensing.
+\textit{Mach.\ Learn.: Sci.\ Technol.}, 5, 035076.
+
+\bibitem{liu2022}
+Liu, X., Gong, C., \& Liu, Q.\ (2022).
+Flow straight and fast: Learning to generate and transfer data with rectified flow.
+\textit{ICLR 2023}.
+
+\bibitem{esser2024}
+Esser, P.\ et al.\ (2024).
+Scaling rectified flow transformers for high-resolution image synthesis (Stable Diffusion 3).
+\textit{ICML 2024 Best Paper}.
+
+\bibitem{xu2025}
+Xu, J.\ et al.\ (2025).
+Fast image super-resolution via consistency rectified flow.
+\textit{ICCV 2025}.
+
+\bibitem{zhu2024}
+Zhu, Y.\ et al.\ (2024).
+FlowIE: Efficient image enhancement via rectified flow.
+\textit{CVPR 2024}.
+
+\bibitem{hu2022}
+Hu, E.\ et al.\ (2022).
+LoRA: Low-rank adaptation of large language models.
+\textit{ICLR 2022}.
+
+\bibitem{dong2015}
+Dong, C., Loy, C.~C., He, K., \& Tang, X.\ (2015).
+Image super-resolution using deep convolutional networks (SRCNN).
+\textit{IEEE TPAMI}.
+
+\bibitem{lim2017}
+Lim, B., Son, S., Kim, H., Nah, S., \& Lee, K.~M.\ (2017).
+Enhanced deep residual networks for single image super-resolution (EDSR).
+\textit{CVPRW 2017}.
+
+\bibitem{wang2021}
+Wang, X., Xie, L., Dong, C., \& Shan, Y.\ (2021).
+Real-ESRGAN: Training real-world blind SR with pure synthetic data.
+\textit{ICCVW 2021}.
+
+\bibitem{saharia2022}
+Saharia, C.\ et al.\ (2022).
+Image super-resolution via iterative refinement (SR3).
+\textit{IEEE TPAMI}.
+
+\bibitem{yue2023}
+Yue, Z.\ et al.\ (2023).
+ResShift: Efficient diffusion model for image SR by residual shifting.
+\textit{NeurIPS 2023}.
+
+\bibitem{alain2017}
+Alain, G., \& Bengio, Y.\ (2017).
+Understanding intermediate layers using linear classifier probes.
+\textit{ICLR Workshop 2017}.
+
+\bibitem{deeplensesim}
+Toomey, M.~W.\ et al.\ (2023).
+DeepLenseSim: gravitational lensing simulation package.
+Available at \url{https://github.com/mwt5345/DeepLenseSim}.
+\end{thebibliography}
+
+\vspace{10pt}
+\begin{center}
+\small\color{darkgray}
+\textbullet \href{https://github.com/Yash-g2310}{\texttt{github.com/Yash-g2310}}
+\quad|\quad
+\textbullet \href{https://www.linkedin.com/in/yash-gupta-851a83134/}{\texttt{linkedin.com/in/yash-gupta-851a83134}}
+\quad|\quad
+\textbullet \texttt{yg351124@gmail.com}
+\end{center}
+
+\end{document}

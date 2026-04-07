@@ -1,6 +1,6 @@
 # Data Segments and Usage
 
-Last reviewed: 2026-04-05
+Last reviewed: 2026-04-06
 Authority: latest generated data-truth report + config and script trace.
 
 ## Four Key Segments
@@ -24,6 +24,33 @@ Interpretation:
 - Remote parquet count is source-repo metadata.
 - Local arrow family is expected cache materialization shape.
 - Local arrow present is what currently exists on disk.
+
+## Schema Contract
+
+| Dataset | Primary fields | Intended role |
+|---|---|---|
+| LayeredDepth-Syn | `image.png`, `depth_1.png` ... `depth_8.png`, `__key__` | dense supervised train/val |
+| LayeredDepth | `image.png`, `tuples.json`, `__key__`, `__url__` | sparse tuple ranking eval |
+
+`tuples.json` roots include `layer_all` and `layer_first`, each with `pairs`, `trips`, and `quads` annotations.
+
+## Split Role Clarification
+
+- Synthetic train (14.8k) is the supervised training source.
+- Synthetic validation (500) is the dense-depth validation source.
+- Real validation (300) is used for tuple-eval tuning checks and periodic reporting.
+- Real test (1.2k) is used for final zero-shot tuple evaluation.
+
+No real split is used as dense supervised loss target in the current training path.
+
+## Local Cache Reality (Important)
+
+- Local synthetic train currently has one materialized arrow shard.
+- Local synthetic validation currently has one materialized arrow shard.
+- Local real validation is partial.
+- Local real test is largely materialized.
+
+This mixed cache state is expected in current local debug workflow and should be treated as a local availability fact, not a dataset-definition change.
 
 ## Usage Matrix (4x4 View)
 
