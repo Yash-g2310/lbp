@@ -7,6 +7,24 @@ Scope: Error-proof local bring-up on limited local shards before server executio
 
 Validate end-to-end correctness and learning behavior on local setup in 4-5 epochs, with strict observability.
 
+## Implemented Workflow Hook (2026-04-07)
+
+1. Stage A policy workflow is now available via CLI:
+- `python cli.py stage-a --config configs/local/dev.yaml --epochs 5`
+2. This workflow applies stage-policy runtime config generation and strict checks for:
+- 4-5 epoch window,
+- end-of-epoch periodic real eval cadence,
+- run-manifest metadata emission.
+3. Existing `train`/`train-eval` commands remain backward compatible.
+
+## Hardware-Aware Local Guidance (RTX 4060 8GB, Range-Based)
+
+1. Batch size: keep within low-memory range (for example 1-4) based on stability.
+2. Gradient accumulation: use a small range (for example 1-8) to reach effective batch targets without OOM.
+3. Input sizing: prefer conservative resolution/crop ranges during Stage A bring-up.
+4. Precision: mixed precision is allowed when finite-loss and gradient checks remain healthy.
+5. If OOM or instability appears, reduce batch/resolution first before changing objective schedule.
+
 ## Data Contract (Local)
 
 1. Synthetic data:
@@ -33,8 +51,9 @@ Before epoch 1, log:
 1. Epoch window:
 - Run 4 or 5 epochs (fixed before run starts).
 
-2. Loss monitoring requirement:
-- All components must be tracked in logs, even if staged weighting applies by epoch.
+2. Loss and validation monitoring requirement:
+- All components must be tracked in logs each epoch, even if staged weighting applies by epoch.
+- Validation metrics must be logged at end-of-epoch for every Stage A epoch.
 - Minimum monitored set:
   - Flow
   - SSI
@@ -53,13 +72,14 @@ Definition:
 - For each tuple point `(x, y, layer_id)`, evaluation must have a predicted depth map for `layer_id`.
 
 Policy:
-- Auto-expand predictions to all layer IDs found in tuples for each evaluated image.
+- Per-image required-layer expansion with deduped layer inference across tuple points.
 
 Mandatory logs:
 
 1. Required layer IDs observed per sample.
 2. Predicted layer IDs generated per sample.
 3. Missing-layer tuple count.
+4. Tuple totals used for scoring (`pairs`, `trips`, `quads`).
 
 Acceptance expectation:
 - Missing-layer tuple count should be zero under auto-expand policy.
@@ -72,6 +92,7 @@ All conditions must hold:
 2. All monitored loss components remain finite.
 3. Gradients remain finite and non-zero.
 4. Local tuple metrics are non-zero and show improving trend over the 4-5 epoch window.
+5. End-of-epoch validation logs are present for all Stage A epochs.
 
 ## Required Outputs
 

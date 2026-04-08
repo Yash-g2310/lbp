@@ -20,6 +20,7 @@ Keep context modular, durable, and useful for subsequent chats.
 - Precompute/index change: update `04_indexing_precompute.md`.
 - New failure mode: update `07_known_risks_and_open_items.md`.
 - New validation command: update `08_verification_playbook.md`.
+- Active-vs-reference implementation boundary change: update `10_repository_layout_reconciliation.md` and affected program-state docs.
 
 ## Recommended Cadence
 

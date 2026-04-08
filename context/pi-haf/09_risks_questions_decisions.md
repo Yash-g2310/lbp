@@ -12,10 +12,23 @@ Scope: Track locked decisions, active risks, and unresolved questions for this p
 5. Tuple layer coverage policy: auto-expand predictions to all required tuple layer IDs.
 6. Primary backbone: DINOv3 ConvNeXt-Small distilled.
 7. Fallback 1: DINOv3 ViT-S16+ distilled.
-8. If fallback 1 unavailable: stop and wait for access/runtime fix.
+8. If primary or fallback backbone is unavailable: stop and ask user interactively for next action (no silent fallback).
 9. DINOv2 temporary fallback: disabled by default, explicit one-off approval only.
 10. Wavelet defaults: `sym4` primary, `bior3.5` fallback, level 2 default.
-11. Stage A strict gate includes non-zero and improving tuple metrics.
+11. Stage A strict gate includes non-zero/improving tuple metrics and end-of-epoch validation logs.
+12. Stage B validation cadence is every 10 epochs, with loss components logged each epoch.
+13. Loss stage boundaries and weights are config-driven (anti-loss-soup guardrail).
+14. Current implementation wave runs from `src/lbp_project` only; `src/pi-haf` is reference-only.
+15. Startup preflight now enforces mandatory assets and precomputed-feature compatibility via shared modules.
+16. `.gitignore` now blocks new untracked additions under `src/pi-haf/` while leaving already tracked files unchanged.
+17. Stage workflows are now first-class commands: `cli.py stage-a` and `cli.py stage-b`.
+18. Train/eval orchestration now emits run manifests with config hash + git metadata for reproducibility tracking.
+19. Stage B server profiles default to `periodic_real_eval_every_epochs=10`.
+20. Server configs `default`, `balanced`, and `stable` explicitly set `architecture.backbone_fallback_approved=false`.
+21. Stage A/Stage B dry-runs are validated as wiring checks only when required artifacts exist (checkpoint for Stage A skip-train, evidence reports for Stage B gate).
+22. Server startup checks now enforce `hardware.min_vram_gb` against detected GPU VRAM (hard failure on mismatch).
+23. Fixture support uses existing quickcheck paths and switches (`EMIT_STAGE_GATE_FIXTURE`) rather than introducing dedicated tracked fixture files.
+24. Stage A skip-train checkpoint resolution now includes quickcheck checkpoint fallback after configured checkpoint paths.
 
 ## Key Risks
 
@@ -40,12 +53,17 @@ Scope: Track locked decisions, active risks, and unresolved questions for this p
 7. Environment drift risk:
 - Conda/pip cleanup or package changes can silently break torch/cuda compatibility.
 
+8. Dry-run fixture risk:
+- Stage-gate verification commands can look like runtime regressions when required evidence/checkpoint artifacts are missing.
+9. Hardware-profile mismatch risk:
+- Running server profiles on lower-VRAM hosts now fails early by policy; operators must select the correct profile for available GPU class.
+
 ## Open Questions (Still Explicit)
 
 1. Exact wavelet component weight schedule across Stage 1 and Stage 2.
 2. Exact numeric thresholds for declaring Stage A tuple trend "improving".
-3. Exact command-level protocol for interactive fallback switch and logging.
-4. Whether Stage B launches ablation branch immediately or only after baseline completion.
+3. Whether Stage B launches ablation branch immediately or only after baseline completion.
+4. Whether fixture evidence generation should be part of default quickcheck CI path or remain opt-in per run.
 
 ## Decision Update Protocol
 

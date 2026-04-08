@@ -1,6 +1,6 @@
 # Entrypoints and Execution Modes
 
-Last reviewed: 2026-04-06
+Last reviewed: 2026-04-07
 
 ## Unified CLI
 
@@ -10,6 +10,8 @@ Commands:
 
 - `train`
 - `train-eval`
+- `stage-a`
+- `stage-b`
 - `quickcheck`
 - `eval-real`
 - `eval-checkpoints`
@@ -39,6 +41,9 @@ Behavior:
 
 - Real eval includes validation and test by default.
 - Precomputed DINO is enabled for training path in server profiles.
+- Server profiles explicitly set `architecture.backbone_fallback_approved: false` to preserve strict no-silent-fallback policy.
+- `stage-b` mode performs a promotion-gate precheck and requires prior Stage A evidence reports.
+- Server preflight enforces `hardware.min_vram_gb` against detected GPU VRAM before launch.
 
 ## Script Groups
 
@@ -62,6 +67,9 @@ Behavior:
 - Evaluation reports: `runs/current/reports/`
 - Quickcheck outputs: `runs/current/quickcheck/`
 - W&B local metadata: `runs/current/wandb/`
+- Stage runtime configs: `runs/current/generated/`
+- Stage manifests: `runs/current/reports/manifests/`
+- Optional gate-fixture evidence (runtime-generated) uses existing `runs/current/reports/real_tuple_eval_epoch_*.json` paths.
 
 ## Layout Status
 

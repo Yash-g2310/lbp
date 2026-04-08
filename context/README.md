@@ -39,6 +39,7 @@ For LayeredDepth experiment planning and paper alignment:
 - `pi-haf/`: PI-HAF layered-depth modular context pack.
 	- Core order now starts from `pi-haf/01_program_state_and_experiment_protocol.md` and `pi-haf/02_experiment_master_plan.md`.
 	- Includes Stage A local protocol, Stage B server protocol, architecture/loss specs, shard/eval contracts, risks log, cleanup runbook, and ablation matrix.
+	- Active PI-HAF contract is supervised-first with tuple P/T/Q as primary real benchmark gates, interactive backbone fallback, and stage-specific logging cadence.
 
 ## Guardrails
 

@@ -45,6 +45,8 @@ Status update: `project_root/` has been fully removed from the active runtime st
 - Active runtime outputs live under `runs/current/`.
 - Optional historical runtime outputs live under `runs/archive/`.
 - Curated outputs intended for sharing remain under `artifacts/`.
+- `src/lbp_project/` is the active implementation/import root for current execution phases.
+- `src/pi-haf/` is reference-only in the current phase; new untracked files under this tree are ignored by `.gitignore` policy.
 
 ## Notes About Notebooks and Reports
 

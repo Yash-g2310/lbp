@@ -20,7 +20,13 @@ Scope: Loss contracts for updated PI-HAF layered-depth baseline.
 Important:
 - These are current implementations in different paths and do not imply final layered-depth baseline equivalence.
 
-## Section B: Target Baseline Loss Stack (User-Requested)
+## Config-Driven Guardrail (Anti-Loss-Soup)
+
+1. Stage transitions, active loss components, and all loss weights are defined in config files only.
+2. Runtime behavior must follow config; ad-hoc runtime loss edits are out of contract.
+3. Any loss-stack change requires an explicit config diff and a decision-log update.
+
+## Section B: Target Baseline Loss Stack (Config-Driven User Request)
 
 Staged schedule:
 
@@ -88,7 +94,7 @@ $$
 
 ## Stability and Soundness Requirements
 
-1. Every component loss must be logged each step/epoch.
+1. Every component loss must be logged each epoch (step-level logging optional).
 2. Every component must pass finite-value checks.
 3. Gradient norms must stay finite and non-zero.
 4. Stage transition at epoch boundary must avoid abrupt instability.

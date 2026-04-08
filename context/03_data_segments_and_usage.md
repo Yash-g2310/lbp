@@ -32,7 +32,7 @@ Interpretation:
 | LayeredDepth-Syn | `image.png`, `depth_1.png` ... `depth_8.png`, `__key__` | dense supervised train/val |
 | LayeredDepth | `image.png`, `tuples.json`, `__key__`, `__url__` | sparse tuple ranking eval |
 
-`tuples.json` roots include `layer_all` and `layer_first`, each with `pairs`, `trips`, and `quads` annotations.
+`tuples.json` roots include `layer_all` and `layer_first`, each exposing `pairs`, `trips`, and `quads` containers; population can vary by split/materialization.
 
 ## Split Role Clarification
 
@@ -40,6 +40,7 @@ Interpretation:
 - Synthetic validation (500) is the dense-depth validation source.
 - Real validation (300) is used for tuple-eval tuning checks and periodic reporting.
 - Real test (1.2k) is used for final zero-shot tuple evaluation.
+- Real benchmark reporting uses tuple P/T/Q as primary metrics.
 
 No real split is used as dense supervised loss target in the current training path.
 

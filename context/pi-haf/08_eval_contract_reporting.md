@@ -6,7 +6,7 @@ Scope: Synthetic and real evaluation policy for Stage A and Stage B.
 ## Evaluation Modes
 
 1. Synthetic dense depth evaluation.
-2. Real tuple ranking evaluation.
+2. Real tuple ranking evaluation (primary real benchmark gate via P/T/Q).
 
 ## Synthetic Evaluation Contract
 
@@ -19,8 +19,8 @@ Scope: Synthetic and real evaluation policy for Stage A and Stage B.
 1. Evaluate on retained real test and validation materialization for local checks.
 2. Use canonical full real splits for server reporting.
 3. Evaluate tuple roots:
-- `layer_all`
-- `layer_first` (when available)
+- `layer_all` (multi-layer benchmark subset)
+- `layer_first` (first-layer benchmark subset when populated)
 
 ## Local Tuple Layer Coverage Requirement
 
@@ -29,7 +29,7 @@ Definition:
 - A tuple is valid only when all required `layer_id` predictions are present for that sample.
 
 Policy (locked):
-- Auto-expand predictions to all layer IDs required by tuples per sample.
+- Per-image required-layer expansion with deduped layer inference across tuple points.
 
 Reporting requirements:
 
@@ -37,6 +37,7 @@ Reporting requirements:
 2. Predicted layer IDs generated.
 3. Missing-layer tuple count.
 4. Tuple totals used for scoring.
+5. Tuple P/T/Q metrics (`pairs_acc`, `trips_acc`, `quads_acc`) as primary report fields.
 
 Expected Stage A behavior:
 - Missing-layer tuple count should be zero under auto-expand.
@@ -48,12 +49,14 @@ All of the following are required:
 1. Tuple metrics are non-zero.
 2. Tuple metrics show improving trend over 4-5 epochs.
 3. No eval-time schema or layer-coverage contract violations.
+4. Local validation reporting is present at end-of-epoch for Stage A.
 
 ## Stage B Evaluation Gate
 
 1. Full synthetic and real reports are generated.
 2. Reporting schema is consistent with Stage A.
 3. Any skipped/missing tuples are explicitly accounted for.
+4. Validation reporting cadence is every 10 epochs during Stage B.
 
 ## Reporting Schema (Minimum)
 
@@ -62,6 +65,8 @@ All of the following are required:
 - config hash
 - backbone variant
 - data materialization summary
+
+Implementation note (2026-04-07): `scripts/eval/eval_synth_depth.py` and `scripts/eval/eval_real_tuples.py` now embed run metadata manifests in report payloads.
 
 2. Synthetic section:
 - per-layer metrics

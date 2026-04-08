@@ -38,3 +38,5 @@ Scope: PI-HAF layered-depth experiment program in `lbp/lbp`.
 - Use `02` to `11` as the working modular implementation pack.
 - Keep `01_program_state_and_experiment_protocol.md` as high-level operational summary.
 - Keep proposal `.tex` as immutable submitted reference; add notes in markdown files instead of rewriting proposal text.
+- Current cycle is supervised-only; tuple P/T/Q metrics are the primary real benchmark gates.
+- Stage workflow commands now available in codebase: `cli.py stage-a` and `cli.py stage-b`.

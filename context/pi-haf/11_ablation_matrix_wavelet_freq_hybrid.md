@@ -3,6 +3,12 @@
 Last reviewed: 2026-04-07
 Scope: Post-baseline ablation roadmap. Not part of Stage A/B critical baseline path.
 
+## Implementation Status Snapshot (2026-04-07)
+
+1. Phase 9A ablation scaffold is implemented in code (`src/lbp_project/training/ablation.py`) and wired into startup/orchestration payloads.
+2. Scaffold presets are available under `configs/experiments/phase9a_*_scaffold.yaml`.
+3. Execution of full ablation branches remains intentionally deferred; current scope is metadata + policy scaffolding only.
+
 ## Purpose
 
 After baseline completion, compare interaction/loss variants to quantify quality vs stability trade-offs.

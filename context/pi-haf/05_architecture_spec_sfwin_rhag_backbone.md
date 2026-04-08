@@ -3,6 +3,8 @@
 Last reviewed: 2026-04-07
 Scope: Target architecture contract for the updated PI-HAF layered-depth path.
 
+Implementation note (2026-04-07): active runtime imports for this phase are from `src/lbp_project` only.
+
 ## High-Level Architecture Intent
 
 1. Keep DINO backbone family frozen.
@@ -19,9 +21,15 @@ Primary baseline:
 
 Fallback policy:
 
-- First fallback: DINOv3 ViT-S16+ distilled.
-- If unavailable, stop and wait for access/runtime fix.
-- Temporary DINOv2 fallback is disabled by default and requires explicit one-off approval.
+- Primary gate: verify DINOv3 ConvNeXt-Small distilled weights are accessible before launch.
+- If primary is unavailable: stop and ask user interactively for next action (path fix, fallback approval, or defer run).
+- First fallback: DINOv3 ViT-S16+ distilled (user-approved only).
+- If fallback is also unavailable: stop and ask user interactively; do not continue with silent fallback.
+- Temporary DINOv2 fallback remains disabled by default and requires explicit one-off approval.
+
+Wiring note:
+
+- Backbone policy/loader is modularized in `lbp_project` and supports strict primary-stop mode plus explicit opt-in fallback candidates.
 
 ## Distillation Clarification
 
@@ -56,7 +64,7 @@ Required matrix in implementation verification:
 
 1. Layer-index conditioning must remain explicit and deterministic.
 2. Invalid or out-of-range layer IDs must trigger clear runtime behavior.
-3. Local eval uses auto-expanded layer prediction per tuple requirements.
+3. Local eval uses per-image required-layer expansion with deduped layer inference per tuple requirements.
 
 ## Tensor Contract Checklist
 

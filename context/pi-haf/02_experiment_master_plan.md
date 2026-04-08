@@ -4,6 +4,22 @@ Last reviewed: 2026-04-07
 Scope: Planning source-of-truth for the updated PI-HAF program with DINO backbone and wavelet-first interaction.
 Status: Approved for implementation start.
 
+## Scope Lock Update (2026-04-07)
+
+1. Active implementation in this phase is restricted to `src/lbp_project`.
+2. `src/pi-haf` remains reference-only and is excluded from new active-workflow artifacts via `.gitignore` policy.
+3. Phase 2 and Phase 3A startup wiring has been implemented in `lbp_project` with modular modules for:
+- config validation,
+- backbone policy and loading,
+- data/precomputed compatibility preflight,
+- stage boundary scheduling,
+- tuple required-layer expansion helpers.
+4. Current implementation cutoff has been extended through Phase 7 workflow wiring in `lbp_project`:
+- Stage A and Stage B stage-policy orchestration,
+- stage-aware CLI entrypoints,
+- manifest-backed reproducibility metadata in train/eval reports,
+- Stage B periodic real-eval cadence policy defaults (10 epochs) in server profiles.
+
 ## Program Objective
 
 Build a theoretically sound, implementation-safe layered depth pipeline using an updated PI-HAF architecture, with:
@@ -26,7 +42,7 @@ Build a theoretically sound, implementation-safe layered depth pipeline using an
 4. Backbone choice:
 - Primary baseline: DINOv3 ConvNeXt-Small distilled.
 - First fallback: DINOv3 ViT-S16+ distilled.
-- If fallback also unavailable: stop and wait for access/runtime fix.
+- If primary/fallback are unavailable: stop and ask user interactively for next action.
 - DINOv2 temporary plumbing fallback is disabled by default and requires explicit one-off approval.
 5. Wavelet defaults:
 - Default family: `sym4`.
@@ -51,12 +67,15 @@ Build a theoretically sound, implementation-safe layered depth pipeline using an
 5. Phase 4: Loss Math and Schedule
 - Capture current losses and target staged loss schedule.
 - Define monitoring and stability checks for every loss component.
+- Lock stage boundaries and weights as config-driven guardrails.
 
 6. Phase 5: Stage A Local Notebook Protocol
 - Define runbook, logging requirements, and acceptance gates for 4-5 epoch local run.
+- Lock local validation reporting cadence to end-of-epoch.
 
 7. Phase 6: Stage B Server Script Protocol
 - Define full-data prerequisites, launch preflight, reporting and abort criteria.
+- Lock server validation reporting cadence to every 10 epochs.
 
 8. Phase 7: Evaluation and Reporting Contract
 - Lock synthetic and real tuple metrics schema and interpretation rules.
@@ -80,7 +99,9 @@ Build a theoretically sound, implementation-safe layered depth pipeline using an
 
 3. Training and validation changes (implementation stage):
 - Staged Flow+SSI then Flow+SSI+Wavelet+Ordinal schedule.
+- Stage schedule/weights loaded from config only.
 - Full component-level logging and gradient health checks in Stage A.
+- Local validation logging end-of-epoch and server validation logging every 10 epochs.
 
 4. Evaluation contract updates (implementation stage):
 - Auto-expanded layer coverage for tuple evaluation.
