@@ -13,6 +13,12 @@ training:
   epochs: 50
   learning_rate: 1.0e-4
   weight_decay: 1.0e-2
+  # Optional Phase 9A scaffold metadata.
+  # ablation:
+  #   enabled: true
+  #   variant: baseline  # baseline|frequency_only|wavelet_only|hybrid_wavelet_frequency
+  #   allow_scaffold_only: true
+  #   notes: "Scaffold-only in Phase 9A; execution wiring deferred."
 
 logging:
   run_name: exp-template

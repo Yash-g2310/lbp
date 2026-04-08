@@ -1,0 +1,15 @@
+# Phase 9A ablation scaffold preset: wavelet-only branch.
+# Use as an override together with an existing local/server base config.
+
+experiment:
+  name: phase9a-wavelet-only-scaffold
+
+training:
+  ablation:
+    enabled: true
+    variant: wavelet_only
+    allow_scaffold_only: true
+    notes: "Phase 9A scaffold-only branch for future wavelet-focused execution wiring."
+
+logging:
+  run_name: phase9a-wavelet-only-scaffold

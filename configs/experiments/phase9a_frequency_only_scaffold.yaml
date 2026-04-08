@@ -1,0 +1,15 @@
+# Phase 9A ablation scaffold preset: frequency-only branch.
+# Use as an override together with an existing local/server base config.
+
+experiment:
+  name: phase9a-frequency-only-scaffold
+
+training:
+  ablation:
+    enabled: true
+    variant: frequency_only
+    allow_scaffold_only: true
+    notes: "Phase 9A scaffold-only branch for future frequency-loss execution wiring."
+
+logging:
+  run_name: phase9a-frequency-only-scaffold

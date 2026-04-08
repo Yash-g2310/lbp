@@ -20,6 +20,7 @@ data:
   persistent_workers: false
   batch_size: 1
   val_batch_size: 1
+  max_layers: 8
   use_precomputed_dino: false
   precomputed_index_path: ./local_cache/features/index.json
 
@@ -32,11 +33,23 @@ architecture:
   use_gradient_checkpointing: false
   fft_mode: fp32
   fft_pad_size: 256
-  dino_embed_dim: 384
+  dino_embed_dim: 768
+  backbone_repo: timm
+  backbone_model: timm/convnext_small.dinov3_lvd1689m
+  backbone_backend: timm_hf
+  backbone_stop_on_failure: true
+  backbone_fallback_approved: false
+  backbone_fallback_models:
+    - backbone_repo: facebookresearch/dinov3
+      backbone_model: dinov3_vitb16
+      backbone_backend: torch_hub
+  max_layer_id: 8
 
 training:
-  epochs: 1
+  epochs: 2
   accum_steps: 1
+  dynamic_layers_enabled: true
+  strict_empty_target: false
   learning_rate: 1.0e-4
   weight_decay: 1.0e-2
   grad_clip_norm: 1.0
@@ -54,6 +67,22 @@ training:
     midpoint_fraction: 0.5
     decoder_weight: 0.5
     bottleneck_weight: 0.25
+  staged_losses:
+    enabled: true
+    mode: flow_staged
+    stage_a_fraction: 0.5
+    stage_b_fraction: 0.8
+    flow_weight: 1.0
+    ssi_weight: 1.0
+    wavelet_weight: 0.02
+    ordinal_weight: 0.05
+    ordinal_margin: 1.0e-2
+    smoothness_weight: 0.01
+    flow_t_low: 0.0
+    flow_t_high: 1.0
+    wavelet_family: sym4
+    wavelet_levels: 2
+    wavelet_fallback_family: bior3.5
 
 logging:
   use_wandb: true
@@ -74,7 +103,15 @@ evaluation:
   run_after_train: false
   run_synth_validation: true
   run_real_tuple_eval: true
+  multi_pass_real_eval: true
   real_dataset_name: princeton-vl/LayeredDepth
+  stage_a_gate:
+    enabled: true
+    min_pairs_acc: 0.05
+    require_non_decreasing_pairs_trend: true
+    min_points: 2
+    trend_eps: 1.0e-8
+    report_dir: ./runs/current/reports
   real_split: validation
   real_layer_key: layer_all
   target_layer: 1

@@ -42,6 +42,7 @@ logs/
 wandb/
 runs/
 local_cache/
+.hf_cache_quickcheck/
 artifacts/reports/
 artifacts/archive/
 artifacts/tmp/
@@ -73,3 +74,6 @@ context/transcripts/
 context/**/*.log
 
 # Intentionally tracked by policy: configs/local/*.yaml
+
+# Reference-only source tree for this phase; keep already tracked files unchanged.
+src/pi-haf/

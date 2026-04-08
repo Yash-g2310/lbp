@@ -4,6 +4,8 @@ experiment:
 
 hardware:
   device: cuda
+  target_gpu_class: rtx6000_24gb_class
+  min_vram_gb: 24
   num_workers: 2
   compile_model: false
   amp: true
@@ -14,12 +16,14 @@ data:
   val_dataset_name: princeton-vl/LayeredDepth-Syn
   val_split: validation
   cache_dir: /mnt/home2/home/yash_g/.cache/huggingface/datasets
+  fallback_cache_dir: ./runs/current/quickcheck/hf_cache
   staged_root: /mnt/home2/home/yash_g/layered_depth
   require_local_staging: true
   pin_memory: true
   persistent_workers: false
   batch_size: 2
   val_batch_size: 1
+  max_layers: 8
   use_precomputed_dino: true
   precomputed_index_path: /mnt/home2/home/yash_g/layered_depth/features/index.json
 
@@ -32,7 +36,17 @@ architecture:
   use_gradient_checkpointing: false
   fft_mode: pad_fp16
   fft_pad_size: 256
-  dino_embed_dim: 384
+  dino_embed_dim: 768
+  backbone_repo: timm
+  backbone_model: timm/convnext_small.dinov3_lvd1689m
+  backbone_backend: timm_hf
+  backbone_stop_on_failure: true
+  backbone_fallback_approved: false
+  backbone_fallback_models:
+    - backbone_repo: facebookresearch/dinov3
+      backbone_model: dinov3_vitb16
+      backbone_backend: torch_hub
+  max_layer_id: 8
 
 training:
   epochs: 1

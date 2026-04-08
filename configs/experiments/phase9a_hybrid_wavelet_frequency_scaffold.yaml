@@ -1,0 +1,15 @@
+# Phase 9A ablation scaffold preset: hybrid wavelet+frequency branch.
+# Use as an override together with an existing local/server base config.
+
+experiment:
+  name: phase9a-hybrid-wavelet-frequency-scaffold
+
+training:
+  ablation:
+    enabled: true
+    variant: hybrid_wavelet_frequency
+    allow_scaffold_only: true
+    notes: "Phase 9A scaffold-only branch for future hybrid execution wiring."
+
+logging:
+  run_name: phase9a-hybrid-wavelet-frequency-scaffold

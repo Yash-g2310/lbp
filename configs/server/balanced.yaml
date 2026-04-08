@@ -4,6 +4,8 @@ experiment:
 
 hardware:
   device: cuda
+  target_gpu_class: rtx6000_40gb_class
+  min_vram_gb: 40
   num_workers: 2
   compile_model: false
   compile_mode: default
@@ -29,6 +31,7 @@ data:
   depth_scale: 1000.0
   depth_clip_min: 1.0e-3
   depth_clip_max: 30.0
+  max_layers: 8
   use_precomputed_dino: true
   precomputed_index_path: /mnt/home2/home/yash_g/layered_depth/features/index.json
   precomputed_max_cached_shards: 1
@@ -42,11 +45,23 @@ architecture:
   use_gradient_checkpointing: true
   fft_mode: pad_fp16
   fft_pad_size: 256
-  dino_embed_dim: 384
+  dino_embed_dim: 768
+  backbone_repo: timm
+  backbone_model: timm/convnext_small.dinov3_lvd1689m
+  backbone_backend: timm_hf
+  backbone_stop_on_failure: true
+  backbone_fallback_approved: false
+  backbone_fallback_models:
+    - backbone_repo: facebookresearch/dinov3
+      backbone_model: dinov3_vitb16
+      backbone_backend: torch_hub
+  max_layer_id: 8
 
 training:
   epochs: 100
   accum_steps: 2
+  dynamic_layers_enabled: true
+  strict_empty_target: false
   memory_efficient_multistage: true
   retry_nonfinite_with_fp32: false
   auto_disable_amp_on_nonfinite: false
@@ -73,6 +88,22 @@ training:
     decoder_weight: 0.5
     bottleneck_weight: 0.25
     min_decay: 0.1
+  staged_losses:
+    enabled: true
+    mode: flow_staged
+    stage_a_fraction: 0.3
+    stage_b_fraction: 0.7
+    flow_weight: 1.0
+    ssi_weight: 1.0
+    wavelet_weight: 0.02
+    ordinal_weight: 0.05
+    ordinal_margin: 1.0e-2
+    smoothness_weight: 0.01
+    flow_t_low: 0.0
+    flow_t_high: 1.0
+    wavelet_family: sym4
+    wavelet_levels: 2
+    wavelet_fallback_family: bior3.5
 
 logging:
   use_wandb: true
@@ -93,6 +124,9 @@ evaluation:
   run_after_train: true
   run_synth_validation: true
   run_real_tuple_eval: true
+  multi_pass_real_eval: true
+  periodic_real_eval_every_epochs: 10
+  periodic_real_max_samples: 200
   real_dataset_name: princeton-vl/LayeredDepth
   real_splits: [validation, test]
   real_layer_keys: [layer_all, layer_first]
@@ -101,6 +135,14 @@ evaluation:
   real_max_samples: 0
   report_dir: ./runs/current/reports
   checkpoint_name: best_checkpoint.pth
+  stage_b_gate:
+    enabled: true
+    min_pairs_acc: 0.05
+    require_non_decreasing_pairs_trend: true
+    min_points: 2
+    trend_eps: 1.0e-8
+    report_dir: ./runs/current/reports
+    source_report: ./runs/current/reports/final_report.json
 
 auth:
   require_wandb_login: true
