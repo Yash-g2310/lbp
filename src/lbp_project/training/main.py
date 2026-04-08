@@ -7,18 +7,36 @@ import subprocess
 import sys
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, cast
 
 import numpy as np
 import torch
 import torch.optim as optim
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 from lbp_project.config.io import load_yaml
+from lbp_project.config.stage_policy import infer_stage_mode, validate_stage_policy
 from lbp_project.data.dataset import get_dataloaders
-from lbp_project.models.wrapper import DINOSFIN_Architecture_NEW
+from lbp_project.data.preflight import build_download_matrix, enforce_startup_preflight, format_download_matrix
+from lbp_project.models.factory import build_depth_model
+from lbp_project.training.ablation import ablation_plan_payload, format_ablation_plan, resolve_ablation_plan
+from lbp_project.training.stages import (
+    compute_stage_boundaries,
+    compute_curriculum_weights,
+    compute_staged_aux_weights,
+    summarize_stage_schedule,
+)
 from lbp_project.utils.logger import setup_wandb
-from lbp_project.utils.losses import SILogLoss
+from lbp_project.utils.losses import (
+    EdgeAwareSmoothnessLoss,
+    OrdinalDepthLoss,
+    RectifiedFlowLoss,
+    SILogLoss,
+    ScaleShiftInvariantLoss,
+    WaveletEdgeLoss,
+    depth_to_inverse_normalized,
+    inverse_normalized_to_metric_depth,
+    reconstruct_depth_from_velocity,
+)
 
 
 def resolve_amp_dtype(hardware_cfg: Dict[str, Any], device: torch.device) -> torch.dtype:
@@ -37,6 +55,16 @@ def resolve_amp_dtype(hardware_cfg: Dict[str, Any], device: torch.device) -> tor
     if dtype == torch.bfloat16 and device.type == "cuda" and not torch.cuda.is_bf16_supported():
         return torch.float16
     return dtype
+
+
+def build_grad_scaler(device: torch.device, enabled: bool) -> Any:
+    grad_scaler_ctor = getattr(torch.amp, "GradScaler", None)
+    if grad_scaler_ctor is not None:
+        try:
+            return grad_scaler_ctor(device=device.type, enabled=enabled)
+        except TypeError:
+            return grad_scaler_ctor(enabled=enabled)
+    return torch.cuda.amp.GradScaler(enabled=enabled and device.type == "cuda")
 
 
 def parse_args() -> argparse.Namespace:
@@ -120,21 +148,347 @@ def build_scheduler(optimizer: torch.optim.Optimizer, cfg: Dict[str, Any]):
 
 
 def curriculum_weights(epoch: int, total_epochs: int, cfg: Dict[str, Any]) -> Tuple[float, float]:
-    cur_cfg = cfg["training"]["curriculum"]
-    if not cur_cfg.get("enabled", True):
-        return float(cur_cfg["decoder_weight"]), float(cur_cfg["bottleneck_weight"])
+    return compute_curriculum_weights(epoch, total_epochs, cfg["training"]["curriculum"])
 
-    midpoint = int(total_epochs * float(cur_cfg["midpoint_fraction"]))
-    if epoch < midpoint:
-        return float(cur_cfg["decoder_weight"]), float(cur_cfg["bottleneck_weight"])
 
-    tail_len = max(1, total_epochs - midpoint - 1)
-    progress = (epoch - midpoint) / tail_len
-    min_decay = float(cur_cfg.get("min_decay", 0.1))
-    if min_decay <= 0:
-        raise ValueError(f"training.curriculum.min_decay must be > 0, got {min_decay}")
-    decay = max(min_decay, 1.0 - progress)
-    return float(cur_cfg["decoder_weight"]) * decay, float(cur_cfg["bottleneck_weight"]) * decay
+def staged_aux_weights(epoch: int, total_epochs: int, cfg: Dict[str, Any]) -> Tuple[float, float]:
+    return compute_staged_aux_weights(epoch, total_epochs, cfg.get("training", {}).get("staged_losses", {}))
+
+
+def resolve_loss_mode(cfg: Dict[str, Any]) -> str:
+    staged_cfg = cfg.get("training", {}).get("staged_losses", {})
+    raw_mode = str(staged_cfg.get("mode", cfg.get("training", {}).get("loss_mode", "legacy"))).strip().lower()
+    aliases = {
+        "legacy": "legacy",
+        "silog": "legacy",
+        "silog_legacy": "legacy",
+        "flow": "flow_staged",
+        "flow_staged": "flow_staged",
+        "rectified_flow": "flow_staged",
+    }
+    if raw_mode not in aliases:
+        raise ValueError(
+            "Unsupported training loss mode '{}'. Use one of: {}".format(
+                raw_mode,
+                sorted(set(aliases.keys())),
+            )
+        )
+    return aliases[raw_mode]
+
+
+def sample_rectified_flow_state(
+    target_depth: torch.Tensor,
+    t_low: float,
+    t_high: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if target_depth.ndim != 4:
+        raise ValueError(f"target_depth must be [B,1,H,W], got {tuple(target_depth.shape)}")
+    if target_depth.shape[1] != 1:
+        raise ValueError(f"target_depth channel must be 1, got {target_depth.shape[1]}")
+    if t_low < 0.0 or t_high > 1.0 or t_high < t_low:
+        raise ValueError(f"flow timestep range must satisfy 0 <= t_low <= t_high <= 1, got [{t_low}, {t_high}]")
+
+    b = target_depth.shape[0]
+    t = torch.empty(b, device=target_depth.device, dtype=target_depth.dtype).uniform_(t_low, t_high)
+    noise = torch.randn_like(target_depth)
+    t_view = t.view(-1, 1, 1, 1)
+    noisy_depth = (1.0 - t_view) * noise + t_view * target_depth
+    velocity_target = target_depth - noise
+    return noisy_depth, t, velocity_target
+
+
+def flow_component_weights_for_epoch(
+    epoch: int,
+    total_epochs: int,
+    staged_cfg: Dict[str, Any],
+) -> Dict[str, float | str]:
+    stage_a_fraction = float(staged_cfg.get("stage_a_fraction", 0.3))
+    stage_b_fraction = float(staged_cfg.get("stage_b_fraction", 0.7))
+    boundaries = compute_stage_boundaries(total_epochs, stage_a_fraction, stage_b_fraction)
+    stage2_active = epoch >= boundaries.stage_a_end_epoch
+
+    flow_weight = float(staged_cfg.get("flow_weight", 1.0))
+    ssi_weight = float(staged_cfg.get("ssi_weight", 1.0))
+    wavelet_weight = float(staged_cfg.get("wavelet_weight", 0.0)) if stage2_active else 0.0
+    ordinal_weight = float(staged_cfg.get("ordinal_weight", 0.0)) if stage2_active else 0.0
+
+    return {
+        "flow_weight": flow_weight,
+        "ssi_weight": ssi_weight,
+        "wavelet_weight": wavelet_weight,
+        "ordinal_weight": ordinal_weight,
+        "stage_label": "stage2_flow_ssi_wavelet_ordinal" if stage2_active else "stage1_flow_ssi",
+    }
+
+
+def compute_dynamic_multistage_loss(
+    model: torch.nn.Module,
+    criterion: SILogLoss,
+    ordinal_criterion: OrdinalDepthLoss,
+    smoothness_criterion: EdgeAwareSmoothnessLoss,
+    images: torch.Tensor,
+    depth_targets: torch.Tensor,
+    depth_layer_mask: torch.Tensor,
+    decoder_w: float,
+    bottleneck_w: float,
+    use_ckpt: bool,
+    precomputed_dino: torch.Tensor | None,
+    ordinal_weight: float,
+    smoothness_weight: float,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    if depth_targets.ndim != 5:
+        raise ValueError(f"depth_targets must be [B,L,1,H,W], got {tuple(depth_targets.shape)}")
+    if depth_layer_mask.ndim != 2:
+        raise ValueError(f"depth_layer_mask must be [B,L], got {tuple(depth_layer_mask.shape)}")
+    if depth_targets.shape[0] != images.shape[0] or depth_targets.shape[1] != depth_layer_mask.shape[1]:
+        raise ValueError(
+            "Batch/layer mismatch across inputs: "
+            f"images={tuple(images.shape)} depth_targets={tuple(depth_targets.shape)} "
+            f"depth_layer_mask={tuple(depth_layer_mask.shape)}"
+        )
+
+    batch_size = images.shape[0]
+    num_layers = depth_targets.shape[1]
+    depth_layer_mask = depth_layer_mask.to(dtype=torch.bool)
+
+    total = images.new_tensor(0.0)
+    components: Dict[str, float] = {}
+    active_layers = 0
+    smooth_losses: list[torch.Tensor] = []
+    pred_by_layer: Dict[int, torch.Tensor] = {}
+    pred_valid_by_layer: Dict[int, torch.Tensor] = {}
+
+    for layer_idx in range(num_layers):
+        sample_mask = depth_layer_mask[:, layer_idx]
+        if not bool(sample_mask.any()):
+            continue
+
+        layer_id = layer_idx + 1
+        selected_idx = torch.nonzero(sample_mask, as_tuple=False).squeeze(1)
+
+        images_sub = images.index_select(0, selected_idx)
+        depth_sub = depth_targets.index_select(0, selected_idx)[:, layer_idx]
+        precomputed_sub = (
+            precomputed_dino.index_select(0, selected_idx) if precomputed_dino is not None else None
+        )
+        target_layer = torch.full(
+            (images_sub.shape[0],),
+            layer_id,
+            device=images.device,
+            dtype=torch.long,
+        )
+
+        out = model(
+            images_sub,
+            target_layer=target_layer,
+            return_intermediate=True,
+            use_checkpointing=use_ckpt,
+            precomputed_dino=precomputed_sub,
+        )
+        validate_stage_outputs(out, f"l{layer_id}")
+
+        l_b = criterion(out["bottleneck"], depth_sub)
+        l_d = criterion(out["decoder"], depth_sub)
+        l_f = criterion(out["final"], depth_sub)
+
+        total = total + l_f + decoder_w * l_d + bottleneck_w * l_b
+        active_layers += 1
+
+        components[f"l{layer_id}_b"] = float(l_b.detach().item())
+        components[f"l{layer_id}_d"] = float(l_d.detach().item())
+        components[f"l{layer_id}_f"] = float(l_f.detach().item())
+
+        pred_full = images.new_zeros((batch_size, 1, images.shape[2], images.shape[3]))
+        pred_full[selected_idx] = out["final"]
+        pred_by_layer[layer_id] = pred_full
+        pred_valid_by_layer[layer_id] = sample_mask
+
+        if smoothness_weight > 0.0:
+            valid_mask = torch.isfinite(depth_sub) & (depth_sub > 0)
+            smooth_losses.append(smoothness_criterion(out["final"], images_sub, valid_mask=valid_mask))
+
+    if active_layers == 0:
+        raise RuntimeError("No active depth layers found in batch; cannot compute dynamic loss")
+
+    total = total / float(active_layers)
+    components["active_layers"] = float(active_layers)
+
+    if ordinal_weight > 0.0 and len(pred_by_layer) > 1:
+        ordinal_terms: list[torch.Tensor] = []
+        for near_id in range(1, num_layers):
+            far_id = near_id + 1
+            if near_id not in pred_by_layer or far_id not in pred_by_layer:
+                continue
+            pair_mask = pred_valid_by_layer[near_id] & pred_valid_by_layer[far_id]
+            if not bool(pair_mask.any()):
+                continue
+
+            near_pred = pred_by_layer[near_id][pair_mask]
+            far_pred = pred_by_layer[far_id][pair_mask]
+            near_target = depth_targets[pair_mask, near_id - 1]
+            far_target = depth_targets[pair_mask, far_id - 1]
+            ordinal_terms.append(ordinal_criterion(near_pred, far_pred, near_target, far_target))
+
+        if ordinal_terms:
+            ordinal_loss = torch.stack(ordinal_terms).mean()
+            total = total + ordinal_weight * ordinal_loss
+            components["ordinal"] = float(ordinal_loss.detach().item())
+
+    if smoothness_weight > 0.0 and smooth_losses:
+        smoothness_loss = torch.stack(smooth_losses).mean()
+        total = total + smoothness_weight * smoothness_loss
+        components["smoothness"] = float(smoothness_loss.detach().item())
+
+    return total, components
+
+
+def compute_dynamic_flow_loss(
+    model: torch.nn.Module,
+    flow_criterion: RectifiedFlowLoss,
+    ssi_criterion: ScaleShiftInvariantLoss,
+    wavelet_criterion: WaveletEdgeLoss,
+    ordinal_criterion: OrdinalDepthLoss,
+    images: torch.Tensor,
+    depth_targets: torch.Tensor,
+    depth_layer_mask: torch.Tensor,
+    use_ckpt: bool,
+    precomputed_dino: torch.Tensor | None,
+    flow_weight: float,
+    ssi_weight: float,
+    wavelet_weight: float,
+    ordinal_weight: float,
+    flow_t_low: float,
+    flow_t_high: float,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    if depth_targets.ndim != 5:
+        raise ValueError(f"depth_targets must be [B,L,1,H,W], got {tuple(depth_targets.shape)}")
+    if depth_layer_mask.ndim != 2:
+        raise ValueError(f"depth_layer_mask must be [B,L], got {tuple(depth_layer_mask.shape)}")
+    if depth_targets.shape[0] != images.shape[0] or depth_targets.shape[1] != depth_layer_mask.shape[1]:
+        raise ValueError(
+            "Batch/layer mismatch across inputs: "
+            f"images={tuple(images.shape)} depth_targets={tuple(depth_targets.shape)} "
+            f"depth_layer_mask={tuple(depth_layer_mask.shape)}"
+        )
+
+    batch_size = images.shape[0]
+    num_layers = depth_targets.shape[1]
+    depth_layer_mask = depth_layer_mask.to(dtype=torch.bool)
+
+    total = images.new_tensor(0.0)
+    components: Dict[str, float] = {}
+    active_layers = 0
+    flow_terms: list[torch.Tensor] = []
+    ssi_terms: list[torch.Tensor] = []
+    wavelet_terms: list[torch.Tensor] = []
+    pred_by_layer: Dict[int, torch.Tensor] = {}
+    pred_valid_by_layer: Dict[int, torch.Tensor] = {}
+
+    for layer_idx in range(num_layers):
+        sample_mask = depth_layer_mask[:, layer_idx]
+        if not bool(sample_mask.any()):
+            continue
+
+        layer_id = layer_idx + 1
+        selected_idx = torch.nonzero(sample_mask, as_tuple=False).squeeze(1)
+
+        images_sub = images.index_select(0, selected_idx)
+        depth_sub_metric = depth_targets.index_select(0, selected_idx)[:, layer_idx]
+        precomputed_sub = (
+            precomputed_dino.index_select(0, selected_idx) if precomputed_dino is not None else None
+        )
+        target_layer = torch.full(
+            (images_sub.shape[0],),
+            layer_id,
+            device=images.device,
+            dtype=torch.long,
+        )
+
+        depth_sub_flow, flow_valid_mask, inv_max = depth_to_inverse_normalized(depth_sub_metric)
+
+        noisy_sub, t_sub, velocity_target = sample_rectified_flow_state(
+            depth_sub_flow,
+            t_low=flow_t_low,
+            t_high=flow_t_high,
+        )
+
+        out = model(
+            images_sub,
+            target_layer=target_layer,
+            return_intermediate=True,
+            use_checkpointing=use_ckpt,
+            precomputed_dino=precomputed_sub,
+            flow_noisy_depth=noisy_sub,
+            flow_t=t_sub,
+            return_velocity=True,
+        )
+        validate_stage_outputs(out, f"l{layer_id}")
+        if "velocity" not in out:
+            raise RuntimeError("Flow objective expected model output key 'velocity' but it was missing")
+
+        velocity_pred = out["velocity"]
+        if not torch.isfinite(velocity_pred).all():
+            raise RuntimeError(f"Non-finite velocity prediction detected at flow layer {layer_id}")
+
+        reconstructed_flow = reconstruct_depth_from_velocity(noisy_sub, velocity_pred, t_sub)
+        reconstructed_metric = inverse_normalized_to_metric_depth(
+            reconstructed_flow,
+            inv_max,
+            valid_mask=flow_valid_mask,
+        )
+
+        flow_loss = flow_criterion(velocity_pred, velocity_target, valid_mask=flow_valid_mask)
+        ssi_loss = ssi_criterion(reconstructed_flow, depth_sub_flow, valid_mask=flow_valid_mask)
+        layer_total = flow_weight * flow_loss + ssi_weight * ssi_loss
+        flow_terms.append(flow_loss)
+        ssi_terms.append(ssi_loss)
+
+        if wavelet_weight > 0.0:
+            reconstructed_wavelet = torch.where(flow_valid_mask, reconstructed_flow, depth_sub_flow)
+            wavelet_loss = wavelet_criterion(reconstructed_wavelet, depth_sub_flow)
+            layer_total = layer_total + wavelet_weight * wavelet_loss
+            wavelet_terms.append(wavelet_loss)
+
+        total = total + layer_total
+        active_layers += 1
+
+        pred_full = images.new_zeros((batch_size, 1, images.shape[2], images.shape[3]))
+        pred_full[selected_idx] = reconstructed_metric
+        pred_by_layer[layer_id] = pred_full
+        pred_valid_by_layer[layer_id] = sample_mask
+
+    if active_layers == 0:
+        raise RuntimeError("No active depth layers found in batch; cannot compute flow loss")
+
+    total = total / float(active_layers)
+    components["active_layers"] = float(active_layers)
+    components["flow"] = float(torch.stack(flow_terms).mean().detach().item()) if flow_terms else 0.0
+    components["ssi"] = float(torch.stack(ssi_terms).mean().detach().item()) if ssi_terms else 0.0
+    if wavelet_terms:
+        components["wavelet"] = float(torch.stack(wavelet_terms).mean().detach().item())
+
+    if ordinal_weight > 0.0 and len(pred_by_layer) > 1:
+        ordinal_terms: list[torch.Tensor] = []
+        for near_id in range(1, num_layers):
+            far_id = near_id + 1
+            if near_id not in pred_by_layer or far_id not in pred_by_layer:
+                continue
+            pair_mask = pred_valid_by_layer[near_id] & pred_valid_by_layer[far_id]
+            if not bool(pair_mask.any()):
+                continue
+
+            near_pred = pred_by_layer[near_id][pair_mask]
+            far_pred = pred_by_layer[far_id][pair_mask]
+            near_target = depth_targets[pair_mask, near_id - 1]
+            far_target = depth_targets[pair_mask, far_id - 1]
+            ordinal_terms.append(ordinal_criterion(near_pred, far_pred, near_target, far_target))
+
+        if ordinal_terms:
+            ordinal_loss = torch.stack(ordinal_terms).mean()
+            total = total + ordinal_weight * ordinal_loss
+            components["ordinal"] = float(ordinal_loss.detach().item())
+
+    return total, components
 
 
 def validate_component_losses(components: Dict[str, float], epoch: int, step: int, eps: float = 1e-10) -> None:
@@ -337,7 +691,7 @@ def save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
-    scaler: torch.amp.GradScaler,
+    scaler: Any,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -431,7 +785,7 @@ def maybe_resume(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
-    scaler: torch.amp.GradScaler,
+    scaler: Any,
     device: torch.device,
 ) -> Tuple[int, float]:
     if not path.exists():
@@ -485,6 +839,23 @@ def maybe_resume(
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    ablation_plan = resolve_ablation_plan(config)
+    ablation_payload = ablation_plan_payload(ablation_plan)
+
+    startup_matrix = build_download_matrix(config)
+    print(format_download_matrix(startup_matrix, prefix="[startup]"), flush=True)
+    print(format_ablation_plan(ablation_plan, prefix="[startup][ablation]"), flush=True)
+    print(f"[startup][ablation-payload] {json.dumps(ablation_payload, sort_keys=True)}", flush=True)
+    preflight_warnings = enforce_startup_preflight(
+        config,
+        strict_server_policy=bool(config.get("data", {}).get("require_local_staging", False)),
+    )
+    for warning in preflight_warnings:
+        print(f"[startup][warn] {warning}", flush=True)
+    inferred_stage_mode = infer_stage_mode(config, requested_mode="auto")
+    print(f"[startup] inferred_stage_mode={inferred_stage_mode}", flush=True)
+    for warning in validate_stage_policy(config, stage_mode=inferred_stage_mode, strict=False):
+        print(f"[startup][warn] {warning}", flush=True)
 
     set_seed(int(config["experiment"]["seed"]))
     device = torch.device("cuda" if torch.cuda.is_available() and config["hardware"]["device"] == "cuda" else "cpu")
@@ -497,19 +868,30 @@ def main() -> None:
     log_to_terminal = bool(log_cfg.get("log_to_terminal", True))
     verbose_components = bool(log_cfg.get("verbose_components", True))
     periodic_eval_every = int(config.get("evaluation", {}).get("periodic_real_eval_every_epochs", 0))
+    staged_cfg = config.get("training", {}).get("staged_losses", {})
+    loss_mode = resolve_loss_mode(config)
+    flow_mode_enabled = loss_mode == "flow_staged"
 
     fft_mode = "fp32" if force_fp32_impl else config["architecture"]["fft_mode"]
-    model = DINOSFIN_Architecture_NEW(
-        strategy=config["architecture"]["strategy"],
-        base_channels=int(config["architecture"]["base_channels"]),
-        num_sfin=int(config["architecture"]["num_sfin"]),
-        num_rhag=int(config["architecture"]["num_rhag"]),
-        window_size=int(config["architecture"]["window_size"]),
-        dino_embed_dim=int(config["architecture"]["dino_embed_dim"]),
-        fft_mode=fft_mode,
-        fft_pad_size=int(config["architecture"]["fft_pad_size"]),
+    model_cfg = dict(config)
+    model_cfg["architecture"] = dict(config["architecture"])
+    model_cfg["architecture"]["fft_mode"] = fft_mode
+    model_cfg["architecture"]["max_layer_id"] = int(
+        config["architecture"].get("max_layer_id", config["data"].get("max_layers", 8))
+    )
+    if flow_mode_enabled:
+        model_cfg["architecture"]["enable_velocity_head"] = bool(
+            model_cfg["architecture"].get("enable_velocity_head", True)
+        )
+        if not bool(model_cfg["architecture"]["enable_velocity_head"]):
+            raise ValueError(
+                "Flow-staged loss mode requires architecture.enable_velocity_head=true"
+            )
+    model: torch.nn.Module = build_depth_model(
+        model_cfg,
+        device,
         use_precomputed_dino=bool(config["data"]["use_precomputed_dino"]),
-    ).to(device)
+    )
 
     compile_requested = bool(config["hardware"].get("compile_model", False))
     if compile_requested and hasattr(torch, "compile"):
@@ -521,17 +903,18 @@ def main() -> None:
         compile_options.setdefault("max_autotune_gemm", False)
         # Torch 2.10 disallows passing both mode and options together.
         if compile_options:
-            model = torch.compile(
+            compiled_model = torch.compile(
                 model,
                 dynamic=compile_dynamic,
                 options=compile_options,
             )
         else:
-            model = torch.compile(
+            compiled_model = torch.compile(
                 model,
                 mode=compile_mode,
                 dynamic=compile_dynamic,
             )
+        model = cast(torch.nn.Module, compiled_model)
 
     optimizer = optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -539,8 +922,27 @@ def main() -> None:
         weight_decay=float(config["training"]["weight_decay"]),
     )
     scheduler = build_scheduler(optimizer, config)
-    criterion = SILogLoss()
-    scaler = torch.amp.GradScaler(device=device.type, enabled=amp_scaler_enabled)
+    criterion = SILogLoss(strict_empty_target=bool(config["training"].get("strict_empty_target", False)))
+    ordinal_criterion = OrdinalDepthLoss(margin=float(staged_cfg.get("ordinal_margin", 1.0e-2)))
+    smoothness_criterion = EdgeAwareSmoothnessLoss()
+    flow_criterion = RectifiedFlowLoss() if flow_mode_enabled else None
+    ssi_criterion = ScaleShiftInvariantLoss() if flow_mode_enabled else None
+    wavelet_criterion = (
+        WaveletEdgeLoss(
+            family=str(staged_cfg.get("wavelet_family", "sym4")),
+            levels=int(staged_cfg.get("wavelet_levels", 2)),
+            fallback_family=str(staged_cfg.get("wavelet_fallback_family", "bior3.5")),
+        )
+        if flow_mode_enabled
+        else None
+    )
+    flow_t_low = float(staged_cfg.get("flow_t_low", 0.0))
+    flow_t_high = float(staged_cfg.get("flow_t_high", 1.0))
+    if flow_mode_enabled and (flow_t_low < 0.0 or flow_t_high > 1.0 or flow_t_high < flow_t_low):
+        raise ValueError(
+            f"training.staged_losses flow timestep range must satisfy 0<=low<=high<=1; got [{flow_t_low}, {flow_t_high}]"
+        )
+    scaler = build_grad_scaler(device, enabled=amp_scaler_enabled)
 
     train_loader, val_loader = get_dataloaders(config)
 
@@ -554,8 +956,10 @@ def main() -> None:
 
     accum_steps = int(config["training"]["accum_steps"])
     max_epochs = int(config["training"]["epochs"])
+    log_terminal(log_to_terminal, summarize_stage_schedule(max_epochs, config["training"]))
     log_every = int(log_cfg.get("train_log_every_steps", log_cfg.get("log_every_steps", 20)))
     use_ckpt = bool(config["architecture"].get("use_gradient_checkpointing", False))
+    dynamic_layers_enabled = bool(config["training"].get("dynamic_layers_enabled", False))
     memory_efficient_multistage = bool(config["training"].get("memory_efficient_multistage", True))
     retry_nonfinite_with_fp32 = bool(config["training"].get("retry_nonfinite_with_fp32", False))
     auto_disable_amp_on_nonfinite = bool(config["training"].get("auto_disable_amp_on_nonfinite", False))
@@ -570,6 +974,7 @@ def main() -> None:
     amp_runtime_dtype = amp_dtype
     consecutive_amp_overflows = 0
     consecutive_nonfinite_steps = 0
+    prev_flow_stage_label: str | None = None
 
     log_terminal(
         log_to_terminal,
@@ -577,7 +982,8 @@ def main() -> None:
             f"[train] device={device.type} amp={amp_enabled} compile={bool(config['hardware'].get('compile_model', False))} "
             f"amp_dtype={str(amp_dtype).replace('torch.', '')} "
             f"force_fp32_impl={force_fp32_impl} fft_mode={fft_mode} "
-            f"precomputed_dino={bool(config['data'].get('use_precomputed_dino', False))} start_epoch={start_epoch}"
+            f"precomputed_dino={bool(config['data'].get('use_precomputed_dino', False))} "
+            f"loss_mode={loss_mode} start_epoch={start_epoch}"
         ),
     )
     if run is not None:
@@ -599,126 +1005,101 @@ def main() -> None:
 
         epoch_train_loss = 0.0
         step_counter = 0
-        decoder_w, bottleneck_w = curriculum_weights(epoch, max_epochs, config)
+        if flow_mode_enabled:
+            decoder_w, bottleneck_w = 0.0, 0.0
+            flow_weights = flow_component_weights_for_epoch(epoch, max_epochs, staged_cfg)
+            flow_w = float(flow_weights["flow_weight"])
+            ssi_w = float(flow_weights["ssi_weight"])
+            wavelet_w = float(flow_weights["wavelet_weight"])
+            ordinal_w = float(flow_weights["ordinal_weight"])
+            smoothness_w = 0.0
+            flow_stage_label = str(flow_weights["stage_label"])
+            if flow_stage_label != prev_flow_stage_label:
+                log_terminal(
+                    log_to_terminal,
+                    f"[train][stage-transition] epoch={epoch+1} -> {flow_stage_label}",
+                )
+                prev_flow_stage_label = flow_stage_label
+        else:
+            decoder_w, bottleneck_w = curriculum_weights(epoch, max_epochs, config)
+            flow_w, ssi_w, wavelet_w = 0.0, 0.0, 0.0
+            ordinal_w, smoothness_w = staged_aux_weights(epoch, max_epochs, config)
 
         for step, batch in enumerate(train_loader):
             images = batch["image"].to(device, non_blocking=True)
-            depth_1 = batch["depth_1"].to(device, non_blocking=True).float()
-            depth_2 = batch["depth_2"].to(device, non_blocking=True).float()
             precomputed_dino = batch.get("dino_features")
             if precomputed_dino is not None:
                 precomputed_dino = precomputed_dino.to(device, non_blocking=True)
 
-            if memory_efficient_multistage:
-                loss1, comp1, loss1_recovered = compute_single_stage_loss_with_recovery(
-                    model,
-                    criterion,
-                    images,
-                    depth_1,
-                    decoder_w,
-                    bottleneck_w,
-                    use_ckpt,
-                    precomputed_dino,
-                    target_layer=1,
-                    prefix="l1",
-                    device=device,
-                    amp_enabled=amp_runtime_enabled,
-                    amp_dtype=amp_runtime_dtype,
-                    retry_in_fp32=retry_nonfinite_with_fp32,
-                    log_to_terminal=log_to_terminal,
+            depth_1 = batch["depth_1"].to(device, non_blocking=True).float()
+            depth_2 = batch["depth_2"].to(device, non_blocking=True).float()
+            depth_targets = batch.get("depth_targets")
+            depth_layer_mask = batch.get("depth_layer_mask")
+            if depth_targets is not None:
+                depth_targets = depth_targets.to(device, non_blocking=True).float()
+            if depth_layer_mask is not None:
+                depth_layer_mask = depth_layer_mask.to(device, non_blocking=True)
+
+            if flow_mode_enabled:
+                if depth_targets is None or depth_layer_mask is None:
+                    depth_targets = torch.stack([depth_1, depth_2], dim=1)
+                    depth_layer_mask = torch.ones(
+                        (images.shape[0], depth_targets.shape[1]),
+                        dtype=torch.bool,
+                        device=device,
+                    )
+                amp_ctx = (
+                    torch.autocast(device_type="cuda", enabled=amp_runtime_enabled, dtype=amp_runtime_dtype)
+                    if device.type == "cuda"
+                    else nullcontext()
                 )
-                if (
-                    not torch.isfinite(loss1)
-                    and device.type == "cuda"
-                    and amp_runtime_enabled
-                    and auto_disable_amp_on_nonfinite
-                ):
-                    amp_runtime_enabled = False
-                    log_terminal(log_to_terminal, "[warn] disabling AMP after non-finite stage-1 loss; retrying in fp32")
-                    loss1, comp1, loss1_recovered = compute_single_stage_loss_with_recovery(
+                with amp_ctx:
+                    if flow_criterion is None or wavelet_criterion is None or ssi_criterion is None:
+                        raise RuntimeError(
+                            "Flow mode is enabled but flow/wavelet/ssi criteria were not initialized"
+                        )
+                    loss, components = compute_dynamic_flow_loss(
+                        model,
+                        flow_criterion,
+                        ssi_criterion,
+                        wavelet_criterion,
+                        ordinal_criterion,
+                        images,
+                        depth_targets,
+                        depth_layer_mask,
+                        use_ckpt,
+                        precomputed_dino,
+                        flow_weight=flow_w,
+                        ssi_weight=ssi_w,
+                        wavelet_weight=wavelet_w,
+                        ordinal_weight=ordinal_w,
+                        flow_t_low=flow_t_low,
+                        flow_t_high=flow_t_high,
+                    )
+                    scaled_loss = loss / accum_steps
+            elif dynamic_layers_enabled and depth_targets is not None and depth_layer_mask is not None:
+                amp_ctx = (
+                    torch.autocast(device_type="cuda", enabled=amp_runtime_enabled, dtype=amp_runtime_dtype)
+                    if device.type == "cuda"
+                    else nullcontext()
+                )
+                with amp_ctx:
+                    loss, components = compute_dynamic_multistage_loss(
                         model,
                         criterion,
+                        ordinal_criterion,
+                        smoothness_criterion,
                         images,
-                        depth_1,
+                        depth_targets,
+                        depth_layer_mask,
                         decoder_w,
                         bottleneck_w,
                         use_ckpt,
                         precomputed_dino,
-                        target_layer=1,
-                        prefix="l1",
-                        device=device,
-                        amp_enabled=amp_runtime_enabled,
-                        amp_dtype=amp_runtime_dtype,
-                        retry_in_fp32=retry_nonfinite_with_fp32,
-                        log_to_terminal=log_to_terminal,
+                        ordinal_weight=ordinal_w,
+                        smoothness_weight=smoothness_w,
                     )
-                if not torch.isfinite(loss1):
-                    raise RuntimeError(
-                        "Non-finite training loss detected in stage-1. "
-                        f"epoch={epoch+1} step={step+1} components={comp1}; "
-                        f"{tensor_stats(images, 'images')}; {tensor_stats(depth_1, 'depth_1')}; "
-                        f"{tensor_stats(depth_2, 'depth_2')}; {tensor_stats(precomputed_dino, 'precomputed_dino')}"
-                    )
-                scaler.scale(loss1 / accum_steps).backward()
-
-                loss2, comp2, loss2_recovered = compute_single_stage_loss_with_recovery(
-                    model,
-                    criterion,
-                    images,
-                    depth_2,
-                    decoder_w,
-                    bottleneck_w,
-                    use_ckpt,
-                    precomputed_dino,
-                    target_layer=2,
-                    prefix="l2",
-                    device=device,
-                    amp_enabled=amp_runtime_enabled,
-                    amp_dtype=amp_runtime_dtype,
-                    retry_in_fp32=retry_nonfinite_with_fp32,
-                    log_to_terminal=log_to_terminal,
-                )
-                if (
-                    not torch.isfinite(loss2)
-                    and device.type == "cuda"
-                    and amp_runtime_enabled
-                    and auto_disable_amp_on_nonfinite
-                ):
-                    amp_runtime_enabled = False
-                    log_terminal(log_to_terminal, "[warn] disabling AMP after non-finite stage-2 loss; retrying in fp32")
-                    loss2, comp2, loss2_recovered = compute_single_stage_loss_with_recovery(
-                        model,
-                        criterion,
-                        images,
-                        depth_2,
-                        decoder_w,
-                        bottleneck_w,
-                        use_ckpt,
-                        precomputed_dino,
-                        target_layer=2,
-                        prefix="l2",
-                        device=device,
-                        amp_enabled=amp_runtime_enabled,
-                        amp_dtype=amp_runtime_dtype,
-                        retry_in_fp32=retry_nonfinite_with_fp32,
-                        log_to_terminal=log_to_terminal,
-                    )
-                if not torch.isfinite(loss2):
-                    raise RuntimeError(
-                        "Non-finite training loss detected in stage-2. "
-                        f"epoch={epoch+1} step={step+1} components={comp2}; "
-                        f"{tensor_stats(images, 'images')}; {tensor_stats(depth_1, 'depth_1')}; "
-                        f"{tensor_stats(depth_2, 'depth_2')}; {tensor_stats(precomputed_dino, 'precomputed_dino')}"
-                    )
-                scaler.scale(loss2 / accum_steps).backward()
-
-                loss = loss1 + loss2
-                components = {**comp1, **comp2}
-                if loss1_recovered:
-                    components["l1_fp32_retry"] = 1.0
-                if loss2_recovered:
-                    components["l2_fp32_retry"] = 1.0
-                validate_component_losses(components, epoch, step)
+                    scaled_loss = loss / accum_steps
             else:
                 amp_ctx = (
                     torch.autocast(device_type="cuda", enabled=amp_runtime_enabled, dtype=amp_runtime_dtype)
@@ -739,18 +1120,16 @@ def main() -> None:
                     )
                     scaled_loss = loss / accum_steps
 
-                if not torch.isfinite(loss):
-                    raise RuntimeError(
-                        "Non-finite training loss detected. "
-                        "Try safer numerics for server runs (e.g., architecture.fft_mode=fp32 and/or hardware.amp=false). "
-                        "For memory-limited runs prefer architecture.fft_mode=pad_fp16. "
-                        f"epoch={epoch+1} step={step+1} components={components}; "
-                        f"{tensor_stats(images, 'images')}; {tensor_stats(depth_1, 'depth_1')}; "
-                        f"{tensor_stats(depth_2, 'depth_2')}; {tensor_stats(precomputed_dino, 'precomputed_dino')}"
-                    )
+            if not torch.isfinite(loss):
+                raise RuntimeError(
+                    "Non-finite training loss detected. "
+                    f"epoch={epoch+1} step={step+1} components={components}; "
+                    f"{tensor_stats(images, 'images')}; {tensor_stats(depth_1, 'depth_1')}; "
+                    f"{tensor_stats(depth_2, 'depth_2')}; {tensor_stats(precomputed_dino, 'precomputed_dino')}"
+                )
 
-                scaler.scale(scaled_loss).backward()
-                validate_component_losses(components, epoch, step)
+            scaler.scale(scaled_loss).backward()
+            validate_component_losses(components, epoch, step)
 
             should_step = ((step + 1) % accum_steps == 0) or ((step + 1) == len(train_loader))
             if should_step:
@@ -843,7 +1222,7 @@ def main() -> None:
                             or scale_after <= amp_disable_scale_threshold
                         ):
                             amp_runtime_enabled = False
-                            scaler = torch.amp.GradScaler(device=device.type, enabled=False)
+                            scaler = build_grad_scaler(device, enabled=False)
                             log_terminal(
                                 log_to_terminal,
                                 (
@@ -870,10 +1249,20 @@ def main() -> None:
                     "train/lr": scheduler.get_last_lr()[0],
                     "train/decoder_weight": decoder_w,
                     "train/bottleneck_weight": bottleneck_w,
+                    "train/ordinal_weight": ordinal_w,
+                    "train/smoothness_weight": smoothness_w,
                     "train/epoch": epoch,
                     "train/step_in_epoch": step,
                     **{f"train/{k}": v for k, v in components.items()},
                 }
+                if flow_mode_enabled:
+                    log_payload.update(
+                        {
+                            "train/flow_weight": flow_w,
+                            "train/ssi_weight": ssi_w,
+                            "train/wavelet_weight": wavelet_w,
+                        }
+                    )
                 if grad_norm is not None:
                     log_payload["train/grad_norm"] = float(grad_norm.item())
 
@@ -906,6 +1295,12 @@ def main() -> None:
                 images = batch["image"].to(device, non_blocking=True)
                 depth_1 = batch["depth_1"].to(device, non_blocking=True).float()
                 depth_2 = batch["depth_2"].to(device, non_blocking=True).float()
+                depth_targets = batch.get("depth_targets")
+                depth_layer_mask = batch.get("depth_layer_mask")
+                if depth_targets is not None:
+                    depth_targets = depth_targets.to(device, non_blocking=True).float()
+                if depth_layer_mask is not None:
+                    depth_layer_mask = depth_layer_mask.to(device, non_blocking=True)
                 precomputed_dino = batch.get("dino_features")
                 if precomputed_dino is not None:
                     precomputed_dino = precomputed_dino.to(device, non_blocking=True)
@@ -916,17 +1311,64 @@ def main() -> None:
                     else nullcontext()
                 )
                 with amp_ctx:
-                    val_loss, _ = compute_multistage_loss(
-                        model,
-                        criterion,
-                        images,
-                        depth_1,
-                        depth_2,
-                        decoder_w,
-                        bottleneck_w,
-                        use_ckpt,
-                        precomputed_dino,
-                    )
+                    if flow_mode_enabled:
+                        if depth_targets is None or depth_layer_mask is None:
+                            depth_targets = torch.stack([depth_1, depth_2], dim=1)
+                            depth_layer_mask = torch.ones(
+                                (images.shape[0], depth_targets.shape[1]),
+                                dtype=torch.bool,
+                                device=device,
+                            )
+                        if flow_criterion is None or wavelet_criterion is None or ssi_criterion is None:
+                            raise RuntimeError(
+                                "Flow mode is enabled but flow/wavelet/ssi criteria were not initialized"
+                            )
+                        val_loss, _ = compute_dynamic_flow_loss(
+                            model,
+                            flow_criterion,
+                            ssi_criterion,
+                            wavelet_criterion,
+                            ordinal_criterion,
+                            images,
+                            depth_targets,
+                            depth_layer_mask,
+                            use_ckpt,
+                            precomputed_dino,
+                            flow_weight=flow_w,
+                            ssi_weight=ssi_w,
+                            wavelet_weight=wavelet_w,
+                            ordinal_weight=ordinal_w,
+                            flow_t_low=flow_t_low,
+                            flow_t_high=flow_t_high,
+                        )
+                    elif dynamic_layers_enabled and depth_targets is not None and depth_layer_mask is not None:
+                        val_loss, _ = compute_dynamic_multistage_loss(
+                            model,
+                            criterion,
+                            ordinal_criterion,
+                            smoothness_criterion,
+                            images,
+                            depth_targets,
+                            depth_layer_mask,
+                            decoder_w,
+                            bottleneck_w,
+                            use_ckpt,
+                            precomputed_dino,
+                            ordinal_weight=ordinal_w,
+                            smoothness_weight=smoothness_w,
+                        )
+                    else:
+                        val_loss, _ = compute_multistage_loss(
+                            model,
+                            criterion,
+                            images,
+                            depth_1,
+                            depth_2,
+                            decoder_w,
+                            bottleneck_w,
+                            use_ckpt,
+                            precomputed_dino,
+                        )
                 if not torch.isfinite(val_loss):
                     raise RuntimeError(
                         "Non-finite validation loss detected. "
@@ -955,13 +1397,18 @@ def main() -> None:
                 step=global_step,
             )
 
-        log_terminal(
-            log_to_terminal,
-            (
+        if flow_mode_enabled:
+            epoch_msg = (
+                f"[epoch {epoch+1}/{max_epochs}] train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
+                f"lr={scheduler.get_last_lr()[0]:.3e} flow_w={flow_w:.4f} ssi_w={ssi_w:.4f} "
+                f"wavelet_w={wavelet_w:.4f} ordinal_w={ordinal_w:.4f}"
+            )
+        else:
+            epoch_msg = (
                 f"[epoch {epoch+1}/{max_epochs}] train_loss={train_loss:.5f} val_loss={val_loss:.5f} "
                 f"lr={scheduler.get_last_lr()[0]:.3e} decoder_w={decoder_w:.4f} bottleneck_w={bottleneck_w:.4f}"
-            ),
-        )
+            )
+        log_terminal(log_to_terminal, epoch_msg)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss

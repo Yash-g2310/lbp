@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 from typing import Any, Dict, Optional
 
 import torch
@@ -61,6 +62,44 @@ def _resolve_key(sample: Dict[str, Any], candidates: tuple[str, ...], feature_na
     )
 
 
+_DEPTH_LAYER_PATTERNS = (
+    re.compile(r"^depth_(\d+)(?:\.png)?$", flags=re.IGNORECASE),
+    re.compile(r"^depth(\d+)$", flags=re.IGNORECASE),
+    re.compile(r"^layer_(\d+)_depth$", flags=re.IGNORECASE),
+    re.compile(r"^depth_layer_(\d+)$", flags=re.IGNORECASE),
+)
+
+
+def _parse_depth_layer_id(key: str) -> Optional[int]:
+    for pattern in _DEPTH_LAYER_PATTERNS:
+        match = pattern.match(key)
+        if match is None:
+            continue
+        layer_id = int(match.group(1))
+        return layer_id if layer_id > 0 else None
+    return None
+
+
+def _discover_depth_layer_keys(sample: Dict[str, Any]) -> Dict[int, str]:
+    layer_to_key: Dict[int, str] = {}
+    for key in sample.keys():
+        layer_id = _parse_depth_layer_id(key)
+        if layer_id is None:
+            continue
+
+        chosen = layer_to_key.get(layer_id)
+        if chosen is None:
+            layer_to_key[layer_id] = key
+            continue
+
+        # Prefer canonical png-style keys when duplicates exist.
+        chosen_rank = 1 if chosen.lower().endswith(".png") else 0
+        key_rank = 1 if key.lower().endswith(".png") else 0
+        if key_rank > chosen_rank:
+            layer_to_key[layer_id] = key
+    return layer_to_key
+
+
 class PrecomputedFeatureStore:
     """Loads feature tensors from sharded .pt files with sample_id lookup."""
 
@@ -73,6 +112,7 @@ class PrecomputedFeatureStore:
             payload = json.load(f)
 
         self.samples: Dict[str, Any] = payload["samples"]
+        self.metadata: Dict[str, Any] = payload.get("metadata", {}) if isinstance(payload, dict) else {}
         self._shard_cache: Dict[str, Dict[str, torch.Tensor]] = {}
         self._cache_order: list[str] = []
         self.max_cached_shards = max(0, int(max_cached_shards))
@@ -179,6 +219,7 @@ class LayeredDepthDataset(Dataset):
         depth_scale: float,
         depth_clip_min: float,
         depth_clip_max: float,
+        max_layers: Optional[int] = None,
     ) -> None:
         self.ds = hf_dataset
         self.feature_store = feature_store
@@ -186,6 +227,9 @@ class LayeredDepthDataset(Dataset):
         self.depth_scale = depth_scale
         self.depth_clip_min = depth_clip_min
         self.depth_clip_max = depth_clip_max
+        self.max_layers = int(max_layers) if max_layers is not None else None
+        if self.max_layers is not None and self.max_layers < 1:
+            raise ValueError(f"max_layers must be >= 1 when set, got {self.max_layers}")
 
     def __len__(self) -> int:
         return len(self.ds)
@@ -195,22 +239,46 @@ class LayeredDepthDataset(Dataset):
         sample_id = _extract_sample_id(sample, index)
 
         image_key = _resolve_key(sample, ("image.png", "image", "rgb", "rgb_image"), "image")
-        depth_1_key = _resolve_key(
-            sample,
-            ("depth_1.png", "depth_1", "depth1", "layer_1_depth", "depth_layer_1"),
-            "depth_1",
-        )
-        depth_2_key = _resolve_key(
-            sample,
-            ("depth_2.png", "depth_2", "depth2", "layer_2_depth", "depth_layer_2"),
-            "depth_2",
-        )
+
+        layer_keys = _discover_depth_layer_keys(sample)
+        if self.max_layers is not None:
+            layer_keys = {k: v for k, v in layer_keys.items() if k <= self.max_layers}
+        if not layer_keys:
+            if "tuples.json" in sample:
+                raise KeyError(
+                    "Validation sample contains 'tuples.json' ranking annotations but no dense depth maps. "
+                    "For supervised validation loss, use a split with dense depth targets (e.g., "
+                    "val_dataset_name=princeton-vl/LayeredDepth-Syn and val_split=validation)."
+                )
+            available = ", ".join(sorted(sample.keys()))
+            raise KeyError(f"No depth layer fields discovered. Available keys: [{available}]")
+
+        depth_layers: Dict[int, torch.Tensor] = {}
+        for layer_id, key in sorted(layer_keys.items()):
+            depth_layers[layer_id] = convert_depth_tensor(
+                sample[key],
+                self.depth_scale,
+                self.depth_clip_min,
+                self.depth_clip_max,
+            )
+
+        if 1 not in depth_layers:
+            available = sorted(depth_layers.keys())
+            raise KeyError(
+                "Missing required depth layer 1 in sample after key discovery. "
+                f"Discovered layers: {available}"
+            )
+
+        depth_1 = depth_layers[1]
+        depth_2 = depth_layers.get(2, torch.zeros_like(depth_1))
 
         item = {
             "sample_id": sample_id,
             "image": transform_img(sample[image_key].convert("RGB")),
-            "depth_1": convert_depth_tensor(sample[depth_1_key], self.depth_scale, self.depth_clip_min, self.depth_clip_max),
-            "depth_2": convert_depth_tensor(sample[depth_2_key], self.depth_scale, self.depth_clip_min, self.depth_clip_max),
+            "depth_1": depth_1,
+            "depth_2": depth_2,
+            "depth_layers": depth_layers,
+            "available_layers": sorted(depth_layers.keys()),
         }
         if self.feature_store is not None:
             item["dino_features"] = self.feature_store.get(self.split_name, sample_id)
@@ -221,11 +289,55 @@ class LayeredDepthDataset(Dataset):
 # 2. BATCH COLLATION
 # ==========================================
 def collate_fn(batch):
+    depth_1 = torch.stack([b["depth_1"] for b in batch])
+    depth_2 = torch.stack([b["depth_2"] for b in batch])
+
+    available_layers = [list(b.get("available_layers", [])) for b in batch]
+    max_layer = max(1, max((max(layers) if layers else 0) for layers in available_layers))
+
+    bsz = len(batch)
+    layer_shape = depth_1.shape[1:]
+    depth_targets = depth_1.new_zeros((bsz, max_layer, *layer_shape))
+    depth_layer_mask = torch.zeros((bsz, max_layer), dtype=torch.bool)
+    depth_valid_pixels = torch.zeros((bsz, max_layer, *layer_shape), dtype=torch.bool)
+
+    for i, sample in enumerate(batch):
+        for layer_id, layer_depth in sample.get("depth_layers", {}).items():
+            if layer_id < 1 or layer_id > max_layer:
+                continue
+            slot = layer_id - 1
+            depth_targets[i, slot] = layer_depth
+            valid = torch.isfinite(layer_depth) & (layer_depth > 0)
+            depth_valid_pixels[i, slot] = valid
+            if bool(valid.any()):
+                depth_layer_mask[i, slot] = True
+
+    # Empty-space contract for layered supervision:
+    # where front layer is missing but layer-2 exists, set L1 := L2 so early-layer flow targets stay coherent.
+    if max_layer >= 2:
+        l1_invalid = ~depth_valid_pixels[:, 0]
+        l2_valid = depth_valid_pixels[:, 1]
+        l1_copy_mask = l1_invalid & l2_valid
+        if bool(l1_copy_mask.any()):
+            depth_targets[:, 0] = torch.where(l1_copy_mask, depth_targets[:, 1], depth_targets[:, 0])
+            depth_valid_pixels[:, 0] = depth_valid_pixels[:, 0] | l1_copy_mask
+            depth_layer_mask[:, 0] = depth_valid_pixels[:, 0].reshape(bsz, -1).any(dim=1)
+
+            # Keep backward-compatible keys consistent with updated multilayer tensors.
+            depth_1 = depth_targets[:, 0]
+            depth_2 = depth_targets[:, 1]
+
     output = {
         "sample_id": [b["sample_id"] for b in batch],
         "image": torch.stack([b["image"] for b in batch]),
-        "depth_1": torch.stack([b["depth_1"] for b in batch]),
-        "depth_2": torch.stack([b["depth_2"] for b in batch]),
+        # Backward-compatible keys used by existing scripts.
+        "depth_1": depth_1,
+        "depth_2": depth_2,
+        # Dynamic multilayer payload used by new training/eval paths.
+        "depth_targets": depth_targets,
+        "depth_layer_mask": depth_layer_mask,
+        "depth_valid_pixels": depth_valid_pixels,
+        "available_layers": available_layers,
     }
     if "dino_features" in batch[0]:
         output["dino_features"] = torch.stack([b["dino_features"] for b in batch])
@@ -274,6 +386,8 @@ def get_dataloaders(cfg: Dict[str, Any]) -> tuple[DataLoader, DataLoader]:
         raise ValueError("data.depth_scale must be > 0")
     depth_clip_min = float(data_cfg.get("depth_clip_min", default_depth_clip_min))
     depth_clip_max = float(data_cfg.get("depth_clip_max", default_depth_clip_max))
+    max_layers_cfg = int(data_cfg.get("max_layers", cfg.get("architecture", {}).get("max_layer_id", 0)))
+    max_layers = max_layers_cfg if max_layers_cfg > 0 else None
 
     train_dataset = LayeredDepthDataset(
         train_hf,
@@ -282,6 +396,7 @@ def get_dataloaders(cfg: Dict[str, Any]) -> tuple[DataLoader, DataLoader]:
         depth_scale,
         depth_clip_min,
         depth_clip_max,
+        max_layers=max_layers,
     )
     val_dataset = LayeredDepthDataset(
         val_hf,
@@ -290,6 +405,7 @@ def get_dataloaders(cfg: Dict[str, Any]) -> tuple[DataLoader, DataLoader]:
         depth_scale,
         depth_clip_min,
         depth_clip_max,
+        max_layers=max_layers,
     )
 
     num_workers = int(hw_cfg["num_workers"])
