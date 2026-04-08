@@ -55,4 +55,5 @@ echo "[cmd] $PYTHON_BIN scripts/training/smoke_batch.py --config $CONFIG_PATH --
 "$PYTHON_BIN" scripts/training/smoke_batch.py --config "$CONFIG_PATH" --max-batch-size "${PRECHECK_MAX_BATCH:-1}"
 echo "[OK] one-batch precheck passed"
 
-"$PYTHON_BIN" cli.py train-eval --config "$CONFIG_PATH" --python "$PYTHON_BIN"
+STAGE_B_PERIODIC_EVAL_EVERY="${STAGE_B_PERIODIC_EVAL_EVERY:-10}"
+"$PYTHON_BIN" cli.py stage-b --config "$CONFIG_PATH" --python "$PYTHON_BIN" --periodic-eval-every "$STAGE_B_PERIODIC_EVAL_EVERY"

@@ -16,6 +16,15 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from lbp_project.config.io import load_yaml
+from lbp_project.config.stage_policy import validate_stage_policy
+from lbp_project.data.preflight import (
+    build_download_matrix,
+    enforce_hardware_profile,
+    enforce_startup_preflight,
+    format_download_matrix,
+    format_hardware_profile,
+)
+from lbp_project.stage_gate import evaluate_stage_b_gate, format_stage_b_gate
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,7 +72,28 @@ def main() -> None:
     args = parse_args()
     cfg = load_yaml(args.config)
 
-    data_cfg = cfg["data"]
+    print(format_download_matrix(build_download_matrix(cfg)), flush=True)
+
+    hardware_profile = enforce_hardware_profile(cfg, strict=True)
+    print(format_hardware_profile(hardware_profile), flush=True)
+
+    preflight_warnings = enforce_startup_preflight(cfg, strict_server_policy=True)
+    for warning in preflight_warnings:
+        print(f"[WARN] {warning}", flush=True)
+
+    for warning in validate_stage_policy(cfg, stage_mode="stage_b", strict=False):
+        print(f"[WARN] {warning}", flush=True)
+
+    try:
+        stage_b_gate = evaluate_stage_b_gate(cfg)
+    except Exception as exc:
+        fail(f"Unable to evaluate Stage-B promotion gate: {exc}")
+    print(format_stage_b_gate(stage_b_gate), flush=True)
+    if not stage_b_gate.enabled:
+        fail("evaluation.stage_b_gate.enabled must be true for Stage-B preflight")
+    if not stage_b_gate.passed:
+        fail("Stage-B promotion gate failed.\n" + format_stage_b_gate(stage_b_gate))
+
     hw_cfg = cfg["hardware"]
     log_cfg = cfg.get("logging", {})
     auth_cfg = cfg.get("auth", {})
@@ -73,20 +103,6 @@ def main() -> None:
 
     if int(hw_cfg.get("num_workers", 0)) > 40:
         fail("num_workers must be <= 40 to respect CPU thread policy")
-
-    if bool(data_cfg.get("use_precomputed_dino", False)) is False:
-        fail("server policy requires use_precomputed_dino=true")
-
-    index_path = Path(data_cfg.get("precomputed_index_path", ""))
-    if not index_path.exists():
-        fail(f"precomputed_index_path missing: {index_path}")
-
-    staged_root = Path(data_cfg.get("staged_root", ""))
-    if not staged_root.exists():
-        fail(
-            f"staged_root missing: {staged_root}. On server, verify /scratch availability with 'ls -ld /scratch'. "
-            "If unavailable, update config to a writable path under /mnt/home2/home/<username>."
-        )
 
     ckpt_dir = Path(cfg.get("training", {}).get("checkpoint", {}).get("dir", ""))
     if not str(ckpt_dir):

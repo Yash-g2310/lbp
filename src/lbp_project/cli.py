@@ -36,6 +36,23 @@ def _build_parser() -> argparse.ArgumentParser:
     train_eval.add_argument("--python", default=_default_python(), help="Python executable")
     train_eval.add_argument("--skip-train", action="store_true", help="Skip training stage")
 
+    stage_a = sub.add_parser("stage-a", help="Run Stage A local policy workflow")
+    stage_a.add_argument("--config", default="configs/local/dev.yaml", help="Path to config")
+    stage_a.add_argument("--python", default=_default_python(), help="Python executable")
+    stage_a.add_argument("--epochs", type=int, default=5, help="Stage A epoch count (must be 5)")
+    stage_a.add_argument("--skip-train", action="store_true", help="Skip training stage")
+
+    stage_b = sub.add_parser("stage-b", help="Run Stage B server policy workflow")
+    stage_b.add_argument("--config", default="configs/server/default.yaml", help="Path to config")
+    stage_b.add_argument("--python", default=_default_python(), help="Python executable")
+    stage_b.add_argument(
+        "--periodic-eval-every",
+        type=int,
+        default=10,
+        help="Stage B periodic real-eval cadence",
+    )
+    stage_b.add_argument("--skip-train", action="store_true", help="Skip training stage")
+
     quickcheck = sub.add_parser("quickcheck", help="Run full quickcheck pipeline")
     quickcheck.add_argument("--config", default="configs/local/quickcheck.yaml", help="Path to config")
     quickcheck.add_argument("--python", default=_default_python(), help="Python executable")
@@ -62,6 +79,46 @@ def main() -> None:
 
     if args.command == "train-eval":
         cmd = [args.python, "scripts/training/train_eval.py", "--config", args.config, "--python", args.python]
+        if args.skip_train:
+            cmd.append("--skip-train")
+        cmd.extend(extra)
+        _run(cmd)
+        return
+
+    if args.command == "stage-a":
+        cmd = [
+            args.python,
+            "scripts/training/train_eval.py",
+            "--config",
+            args.config,
+            "--python",
+            args.python,
+            "--stage-mode",
+            "stage_a",
+            "--stage-a-epochs",
+            str(args.epochs),
+            "--strict-stage-policy",
+        ]
+        if args.skip_train:
+            cmd.append("--skip-train")
+        cmd.extend(extra)
+        _run(cmd)
+        return
+
+    if args.command == "stage-b":
+        cmd = [
+            args.python,
+            "scripts/training/train_eval.py",
+            "--config",
+            args.config,
+            "--python",
+            args.python,
+            "--stage-mode",
+            "stage_b",
+            "--stage-b-periodic-eval-every",
+            str(args.periodic_eval_every),
+            "--strict-stage-policy",
+        ]
         if args.skip_train:
             cmd.append("--skip-train")
         cmd.extend(extra)

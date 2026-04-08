@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from lbp_project.config.io import load_yaml
 from lbp_project.data.dataset import get_dataloaders
+from lbp_project.data.preflight import build_download_matrix, enforce_startup_preflight, format_download_matrix
 from lbp_project.models.factory import build_depth_model
 from lbp_project.utils.losses import SILogLoss
 
@@ -28,6 +29,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     cfg = load_yaml(args.config)
+
+    print(format_download_matrix(build_download_matrix(cfg), prefix="[smoke-startup]"), flush=True)
+    warnings = enforce_startup_preflight(
+        cfg,
+        strict_server_policy=bool(cfg.get("data", {}).get("require_local_staging", False)),
+    )
+    for warning in warnings:
+        print(f"[smoke-startup][warn] {warning}", flush=True)
 
     # Smoke test uses very conservative memory settings by default.
     cfg["data"]["batch_size"] = min(int(cfg["data"]["batch_size"]), int(args.max_batch_size))

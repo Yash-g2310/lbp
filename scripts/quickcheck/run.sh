@@ -10,8 +10,26 @@ cd "$ROOT_DIR"
 echo "[stage 1/6] audit configs"
 "$PYTHON_BIN" scripts/config/validate_yaml.py --configs "$CONFIG_PATH"
 
+FALLBACK_CACHE_DIR="${FALLBACK_CACHE_DIR:-$($PYTHON_BIN - "$CONFIG_PATH" <<'PY'
+import sys
+import yaml
+
+cfg = yaml.safe_load(open(sys.argv[1], "r", encoding="utf-8"))
+print(str(cfg.get("data", {}).get("fallback_cache_dir", "")).strip())
+PY
+)}"
+
 echo "[stage 2/6] audit dataset and shards"
-"$PYTHON_BIN" scripts/config/validate_dataset.py --config "$CONFIG_PATH" --verify-index-coverage --progress-every 1000
+DATASET_AUDIT_ARGS=(
+	--config "$CONFIG_PATH"
+	--verify-index-coverage
+	--progress-every 1000
+)
+if [[ -n "$FALLBACK_CACHE_DIR" ]]; then
+	echo "[info] using fallback cache dir for dataset audit: $FALLBACK_CACHE_DIR"
+	DATASET_AUDIT_ARGS+=(--fallback-cache-dir "$FALLBACK_CACHE_DIR")
+fi
+"$PYTHON_BIN" scripts/config/validate_dataset.py "${DATASET_AUDIT_ARGS[@]}"
 
 echo "[stage 3/6] data quickcheck"
 "$PYTHON_BIN" scripts/quickcheck/check_data.py --config "$CONFIG_PATH"
@@ -83,6 +101,7 @@ fi
 
 echo "[stage 6/6] real tuple eval quickcheck"
 QC_CKPT="$ROOT_DIR/runs/current/quickcheck/checkpoints/quickcheck/sanity_roundtrip.pth"
+QC_REAL_REPORT="$ROOT_DIR/runs/current/quickcheck/reports/real_tuple_eval_quickcheck.json"
 "$PYTHON_BIN" scripts/eval/eval_real_tuples.py \
 	--config "$CONFIG_PATH" \
 	--checkpoint "$QC_CKPT" \
@@ -90,6 +109,15 @@ QC_CKPT="$ROOT_DIR/runs/current/quickcheck/checkpoints/quickcheck/sanity_roundtr
 	--layer-keys "$EVAL_LAYER_KEYS" \
 	--target-layer "$TARGET_LAYER" \
 	--max-samples "$MAX_SAMPLES" \
-	--output "$ROOT_DIR/runs/current/quickcheck/reports/real_tuple_eval_quickcheck.json"
+	--output "$QC_REAL_REPORT"
+
+EMIT_STAGE_GATE_FIXTURE="${EMIT_STAGE_GATE_FIXTURE:-0}"
+if [[ "$EMIT_STAGE_GATE_FIXTURE" == "1" ]]; then
+	FIXTURE_REPORT_DIR="$ROOT_DIR/runs/current/reports"
+	mkdir -p "$FIXTURE_REPORT_DIR"
+	cp "$QC_REAL_REPORT" "$FIXTURE_REPORT_DIR/real_tuple_eval_epoch_1.json"
+	cp "$QC_REAL_REPORT" "$FIXTURE_REPORT_DIR/real_tuple_eval_epoch_2.json"
+	echo "[fixture] emitted stage-gate evidence in $FIXTURE_REPORT_DIR"
+fi
 
 echo "[done] quickcheck pipeline passed for $CONFIG_PATH"

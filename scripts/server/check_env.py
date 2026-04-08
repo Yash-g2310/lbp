@@ -14,6 +14,15 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from lbp_project.config.io import load_yaml
+from lbp_project.config.stage_policy import validate_stage_policy
+from lbp_project.data.preflight import (
+    build_download_matrix,
+    enforce_hardware_profile,
+    enforce_startup_preflight,
+    format_download_matrix,
+    format_hardware_profile,
+)
+from lbp_project.stage_gate import evaluate_stage_b_gate, format_stage_b_gate
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,6 +62,37 @@ def check_writable(path: Path) -> bool:
 def main() -> None:
     args = parse_args()
     cfg = load_yaml(args.config)
+
+    print(format_download_matrix(build_download_matrix(cfg), prefix="[doctor]"), flush=True)
+
+    hardware_profile = enforce_hardware_profile(
+        cfg,
+        strict=bool(cfg.get("data", {}).get("require_local_staging", False)),
+    )
+    print(format_hardware_profile(hardware_profile, prefix="[doctor][hardware]"), flush=True)
+
+    warnings = enforce_startup_preflight(
+        cfg,
+        strict_server_policy=bool(cfg.get("data", {}).get("require_local_staging", False)),
+    )
+    for warning in warnings:
+        print(f"[doctor][warn] {warning}", flush=True)
+
+    for warning in validate_stage_policy(cfg, stage_mode="stage_b", strict=False):
+        print(f"[doctor][warn] {warning}", flush=True)
+
+    try:
+        stage_b_gate = evaluate_stage_b_gate(cfg)
+    except Exception as exc:
+        raise SystemExit(f"[FAIL] Unable to evaluate Stage-B promotion gate: {exc}")
+    print(format_stage_b_gate(stage_b_gate, prefix="[doctor][stage-b-gate]"), flush=True)
+    if not stage_b_gate.enabled:
+        raise SystemExit("[FAIL] evaluation.stage_b_gate.enabled must be true for Stage-B checks")
+    if not stage_b_gate.passed:
+        raise SystemExit(
+            "[FAIL] Stage-B promotion gate failed.\n"
+            + format_stage_b_gate(stage_b_gate, prefix="[doctor][stage-b-gate]")
+        )
 
     data_cfg = cfg.get("data", {})
     auth_cfg = cfg.get("auth", {})
