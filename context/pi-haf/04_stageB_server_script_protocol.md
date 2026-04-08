@@ -1,6 +1,6 @@
 # Stage B Server Script Protocol
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 Scope: Full-data scripted training/evaluation after Stage A pass.
 
 ## Goal
@@ -13,6 +13,19 @@ Execute full-data run with reproducibility, strict preflight, and stable reporti
 - `python cli.py stage-b --config configs/server/default.yaml --periodic-eval-every 10`
 2. Slurm train template now dispatches through Stage B workflow command.
 3. Stage-policy runtime config generation and run-manifest emission are now part of `scripts/training/train_eval.py`.
+
+## Target Runtime Contract (Locked)
+
+1. Stage B epoch policy:
+- 25 epochs preferred.
+- Up to 30 epochs allowed if 24-hour budget permits.
+
+2. Hard stop policy:
+- Stop at `min(24h, 30 epochs)`.
+
+3. Evaluation policy:
+- Run periodic evaluation every 10 epochs.
+- Always run final full real benchmark evaluation at stop (1200-image test contract).
 
 ## Entry Preconditions
 
@@ -86,6 +99,7 @@ Abort conditions:
 2. Unrecoverable index/key mismatches.
 3. Backbone access failure without approved fallback.
 4. Hardware profile VRAM check failure.
+5. Runtime wall-clock limit reached under dual-cap contract.
 
 Recovery requirements:
 
@@ -100,6 +114,7 @@ Recovery requirements:
 3. Synthetic evaluation report.
 4. Real tuple evaluation report.
 5. Promotion recommendation for long-run or ablation branch.
+6. Final-stop full real benchmark report under the 1200-image contract.
 
 ## Stage B Completion Gate
 

@@ -1,8 +1,18 @@
 # Verification Playbook
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 
 Use these commands after major config or data path changes.
+
+## Stage Intent (Reference)
+
+1. Stage A = error-free bring-up and geometric warmup (Flow + SSI target objective).
+2. Stage B = physics lockdown (Flow + SSI + Wavelet Edge + Ordinal target objective).
+
+Status note:
+
+- Stage commands are implemented.
+- Full PI-HAF flow-space migration and final runtime dual-cap policy are approved targets and must be verified after migration implementation.
 
 ## Docs and Reporting
 
@@ -76,6 +86,17 @@ Preconditions for Stage B dry-run:
 - Promotion evidence must exist under `runs/current/reports/` as periodic files (`real_tuple_eval_epoch_*.json`) or a valid `final_report.json`.
 - Without evidence files, the Stage B gate is expected to fail before training/eval orchestration.
 - Hardware policy must pass: detected GPU VRAM must meet `hardware.min_vram_gb` for the selected server profile.
+
+## Stage B Target Runtime Contract (Pending Full Lock)
+
+1. Epoch policy: 25 preferred, up to 30 if runtime budget remains.
+2. Stop policy: hard stop at `min(24h, 30 epochs)`.
+3. Eval cadence: every 10 epochs during run.
+4. Final-stop policy: always execute final full real evaluation (1200-image benchmark split contract) before closeout.
+
+Implementation reminder:
+
+- Until this contract is fully wired in runtime scripts, treat it as approved target behavior and verify with explicit runtime logs when enabled.
 
 ## Server Preflight
 

@@ -1,6 +1,6 @@
 # Loss Stack: Math and Staged Schedule
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 Scope: Loss contracts for updated PI-HAF layered-depth baseline.
 
 ## Section A: Current Losses (Reality Snapshot)
@@ -20,6 +20,9 @@ Scope: Loss contracts for updated PI-HAF layered-depth baseline.
 Important:
 - These are current implementations in different paths and do not imply final layered-depth baseline equivalence.
 
+Status note:
+- Flow-capable branches exist in code, but full PI-HAF target defaults are not yet active in all runtime profiles.
+
 ## Config-Driven Guardrail (Anti-Loss-Soup)
 
 1. Stage transitions, active loss components, and all loss weights are defined in config files only.
@@ -30,11 +33,15 @@ Important:
 
 Staged schedule:
 
-1. Stage 1 (epochs 0-5):
+1. Stage 1 (epochs 0-4):
 - Flow Loss + SSI Loss
 
-2. Stage 2 (epochs 5-10):
+2. Stage 2 (epoch 5 onward in Stage B window):
 - Flow Loss + SSI Loss + Wavelet Edge Loss + Ordinal Loss
+
+Runtime note:
+- Stage A is fixed 5 epochs.
+- Stage B uses server dual-cap policy (25 preferred, up to 30, hard stop at `min(24h, 30 epochs)`).
 
 ## Mathematical Definitions
 
@@ -47,6 +54,18 @@ L_{flow} = \| v_\theta(x_t, t, c) - v^*(x_t, t, c) \|_2^2
 $$
 
 where $c$ denotes conditioning context (including layer-aware cues).
+
+### Representation Contract (Approved Target)
+
+Flow objectives are defined over inverse-depth normalized space bounded to $[-1,1]$.
+
+$$
+d_{inv} = \frac{1}{\max(d, \epsilon)}, \quad d_{norm} = 2 \cdot \frac{d_{inv}}{d_{inv,max}} - 1
+$$
+
+Migration policy:
+- this contract is a retraining boundary.
+- legacy positive-depth checkpoints are not promoted across this boundary.
 
 ### 2) SSI Loss
 

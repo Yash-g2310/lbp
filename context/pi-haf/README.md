@@ -1,6 +1,6 @@
 # PI-HAF Context Pack
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 Scope: PI-HAF layered-depth experiment program in `lbp/lbp`.
 
 ## Start Order For New Chats
@@ -22,7 +22,7 @@ Scope: PI-HAF layered-depth experiment program in `lbp/lbp`.
 
 - `01_program_state_and_experiment_protocol.md`: canonical state, execution gates, and program-level protocol.
 - `02_experiment_master_plan.md`: phase-wise master plan, locked decisions, and expected final change set.
-- `03_stageA_local_notebook_protocol.md`: local 4-5 epoch bring-up protocol and strict Stage A acceptance gates.
+- `03_stageA_local_notebook_protocol.md`: local fixed-5-epoch bring-up protocol and strict Stage A acceptance gates.
 - `04_stageB_server_script_protocol.md`: server full-data scripted execution protocol and preflight/abort rules.
 - `05_architecture_spec_sfwin_rhag_backbone.md`: architecture contract for backbone, SFWIN-first path, and RHAG compatibility.
 - `06_loss_stack_math_and_schedule.md`: current vs target loss inventory, equations, and staged schedule.
@@ -40,3 +40,5 @@ Scope: PI-HAF layered-depth experiment program in `lbp/lbp`.
 - Keep proposal `.tex` as immutable submitted reference; add notes in markdown files instead of rewriting proposal text.
 - Current cycle is supervised-only; tuple P/T/Q metrics are the primary real benchmark gates.
 - Stage workflow commands now available in codebase: `cli.py stage-a` and `cli.py stage-b`.
+- All updates must mark statements as either implemented now or approved target (pending implementation).
+- Stage policy target is fixed Stage A (5 epochs) and Stage B dual-cap runtime (`min(24h, 30 epochs)`) with mandatory final full real eval.

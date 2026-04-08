@@ -1,6 +1,6 @@
 # Evaluation Contract and Reporting
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 Scope: Synthetic and real evaluation policy for Stage A and Stage B.
 
 ## Evaluation Modes
@@ -47,7 +47,7 @@ Expected Stage A behavior:
 All of the following are required:
 
 1. Tuple metrics are non-zero.
-2. Tuple metrics show improving trend over 4-5 epochs.
+2. Tuple metrics show improving trend over fixed 5-epoch Stage A window.
 3. No eval-time schema or layer-coverage contract violations.
 4. Local validation reporting is present at end-of-epoch for Stage A.
 
@@ -57,6 +57,13 @@ All of the following are required:
 2. Reporting schema is consistent with Stage A.
 3. Any skipped/missing tuples are explicitly accounted for.
 4. Validation reporting cadence is every 10 epochs during Stage B.
+5. Final-stop full real benchmark evaluation is mandatory at Stage B stop.
+
+## Stage B Stop/Eval Runtime Policy (Approved Target)
+
+1. Stage B uses dual cap: `min(24h, 30 epochs)`.
+2. 25 epochs is preferred when budget and stability permit.
+3. A final full real evaluation (1200-image contract) must run at stop regardless of stop trigger.
 
 ## Reporting Schema (Minimum)
 

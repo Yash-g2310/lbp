@@ -1,6 +1,6 @@
 # Experiment Master Plan: PI-HAF LayeredDepth Program
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 Scope: Planning source-of-truth for the updated PI-HAF program with DINO backbone and wavelet-first interaction.
 Status: Approved for implementation start.
 
@@ -27,12 +27,12 @@ Build a theoretically sound, implementation-safe layered depth pipeline using an
 - Frozen DINO backbone family.
 - Wavelet-first interaction blocks in the updated PI-HAF path.
 - Two-stage execution strategy:
-  - Stage A: local 4-5 epoch notebook bring-up with exhaustive logging and hard correctness gates.
-  - Stage B: server full-data script execution with reproducibility and promotion gates.
+  - Stage A: fixed 5-epoch bring-up with exhaustive logging and hard correctness gates.
+  - Stage B: server script execution with dual-cap runtime contract and promotion gates.
 
 ## Locked Decisions
 
-1. Stage A local run length: 4-5 epochs.
+1. Stage A local run length: fixed 5 epochs.
 2. Real data handling:
 - Nominal dataset definition remains 1200 test + 300 validation.
 - Local shard materialization is reindexed and must be treated as local runtime state, not dataset redefinition.
@@ -48,6 +48,15 @@ Build a theoretically sound, implementation-safe layered depth pipeline using an
 - Default family: `sym4`.
 - Fallback family: `bior3.5`.
 - Default decomposition level: 2.
+6. Stage B runtime policy target:
+- 25 epochs preferred, may run up to 30 if budget remains.
+- Hard stop at `min(24h, 30 epochs)`.
+- Final full real evaluation is mandatory at stop.
+7. Depth-space migration policy:
+- PI-HAF flow target requires inverse-depth normalized to `[-1,1]`.
+- Migration is a retraining boundary; no checkpoint compatibility shim.
+8. Documentation policy:
+- Context must explicitly separate implemented now vs approved target pending implementation.
 
 ## Phase Map
 
@@ -70,7 +79,7 @@ Build a theoretically sound, implementation-safe layered depth pipeline using an
 - Lock stage boundaries and weights as config-driven guardrails.
 
 6. Phase 5: Stage A Local Notebook Protocol
-- Define runbook, logging requirements, and acceptance gates for 4-5 epoch local run.
+- Define runbook, logging requirements, and acceptance gates for fixed 5-epoch local run.
 - Lock local validation reporting cadence to end-of-epoch.
 
 7. Phase 6: Stage B Server Script Protocol
@@ -85,6 +94,23 @@ Build a theoretically sound, implementation-safe layered depth pipeline using an
 
 10. Phase 9: Ablation Roadmap
 - Define post-baseline ablations: frequency-only, wavelet-only, hybrid wavelet+frequency.
+
+## Incremental Implementation Roadmap (Post-Context)
+
+1. Phase A: Data-space migration
+- Implement dataloader empty-space rule (`L1 = L2` contract) and inverse-depth normalization to `[-1,1]`.
+
+2. Phase B: Conditioning migration
+- Implement AdaLN-Zero full-scope conditioning with `(layer_id, timestep)` propagated through decoder blocks.
+
+3. Phase C: Stability migration
+- Implement precision policy target (BF16 global + FP32 wavelet bubble) and dynamic window padding safeguards.
+
+4. Phase D: Runtime policy migration
+- Implement Stage B dual-cap stop behavior and mandatory final full real evaluation trigger.
+
+5. Phase E: Promotion and recalibration
+- Retrain from scratch on migrated depth-space path and recalibrate gate thresholds before promotion.
 
 ## Final Expected Change Set (Implementation Target)
 
@@ -102,6 +128,7 @@ Build a theoretically sound, implementation-safe layered depth pipeline using an
 - Stage schedule/weights loaded from config only.
 - Full component-level logging and gradient health checks in Stage A.
 - Local validation logging end-of-epoch and server validation logging every 10 epochs.
+ - Stage B runtime dual-cap closeout with final full real evaluation.
 
 4. Evaluation contract updates (implementation stage):
 - Auto-expanded layer coverage for tuple evaluation.

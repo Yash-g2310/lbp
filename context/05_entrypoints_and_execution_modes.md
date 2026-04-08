@@ -1,6 +1,6 @@
 # Entrypoints and Execution Modes
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 
 ## Unified CLI
 
@@ -16,6 +16,22 @@ Commands:
 - `eval-real`
 - `eval-checkpoints`
 
+## Stage Intent (Math Contract)
+
+1. **Stage A**:
+- Error-free bring-up and geometric warmup.
+- Target objective: Flow + SSI.
+- Target schedule: fixed 5 epochs.
+
+2. **Stage B**:
+- Physics lockdown and structural refinement.
+- Target objective: Flow + SSI + Wavelet Edge + Ordinal.
+- Target server policy: 25 epochs preferred, can extend up to 30 within runtime budget.
+
+3. **Dual-cap stop policy (target)**:
+- Hard stop at `min(24h, 30 epochs)`.
+- Always run final full real benchmark evaluation at stop.
+
 ## Local Mode
 
 Typical configs:
@@ -27,6 +43,7 @@ Behavior:
 
 - Real eval is validation-only by default.
 - Precomputed DINO is disabled by default.
+- Stage-A command path is implemented, but full PI-HAF flow-space migration is still pending.
 
 ## Server Mode
 
@@ -44,6 +61,8 @@ Behavior:
 - Server profiles explicitly set `architecture.backbone_fallback_approved: false` to preserve strict no-silent-fallback policy.
 - `stage-b` mode performs a promotion-gate precheck and requires prior Stage A evidence reports.
 - Server preflight enforces `hardware.min_vram_gb` against detected GPU VRAM before launch.
+- Current implementation supports periodic real eval cadence control.
+- Dual-cap stop policy and mandatory final 1200-image full eval are approved target behavior pending full implementation lock.
 
 ## Script Groups
 

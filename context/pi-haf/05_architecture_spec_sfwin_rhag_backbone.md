@@ -1,9 +1,11 @@
 # Architecture Specification: SFWIN + RHAG + DINO Backbone
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 Scope: Target architecture contract for the updated PI-HAF layered-depth path.
 
 Implementation note (2026-04-07): active runtime imports for this phase are from `src/lbp_project` only.
+
+Status note (2026-04-08): this file contains both implemented contracts and approved target contracts. Target contracts must not be treated as active defaults until implementation is merged.
 
 ## High-Level Architecture Intent
 
@@ -65,6 +67,27 @@ Required matrix in implementation verification:
 1. Layer-index conditioning must remain explicit and deterministic.
 2. Invalid or out-of-range layer IDs must trigger clear runtime behavior.
 3. Local eval uses per-image required-layer expansion with deduped layer inference per tuple requirements.
+
+## AdaLN-Zero Contract (Approved Target, Full Scope)
+
+1. Conditioning input for normalization blocks includes:
+- layer index embedding,
+- flow timestep embedding.
+
+2. Conditioning application requirement:
+- propagate adaptive modulation through residual blocks (not entry-only conditioning).
+
+3. Initialization requirement:
+- zero-initialized modulation path to preserve stable identity behavior at startup.
+
+4. Implementation status:
+- current runtime is not yet full AdaLN-Zero in decoder blocks; migration work is required.
+
+## Dimensional Bridge and Window Safety
+
+1. Explicit bridge is required where 2D feature maps and attention token/window operations interact.
+2. Dynamic right/bottom padding is required when feature-map size is not divisible by `window_size`.
+3. Hard-fail divisibility checks are treated as pre-migration behavior and should be replaced by safe padding flow in target implementation.
 
 ## Tensor Contract Checklist
 

@@ -1,12 +1,12 @@
 # Risks, Questions, and Decisions Log
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 Scope: Track locked decisions, active risks, and unresolved questions for this program.
 
 ## Locked Decisions
 
 1. Planning-only branch approved to move into implementation.
-2. Stage A local run: 4-5 epochs.
+2. Stage A local run: fixed 5 epochs.
 3. Real split facts remain canonical: 1200 test + 300 validation.
 4. Local real shards retained and reindexed for local evaluation checks.
 5. Tuple layer coverage policy: auto-expand predictions to all required tuple layer IDs.
@@ -29,6 +29,41 @@ Scope: Track locked decisions, active risks, and unresolved questions for this p
 22. Server startup checks now enforce `hardware.min_vram_gb` against detected GPU VRAM (hard failure on mismatch).
 23. Fixture support uses existing quickcheck paths and switches (`EMIT_STAGE_GATE_FIXTURE`) rather than introducing dedicated tracked fixture files.
 24. Stage A skip-train checkpoint resolution now includes quickcheck checkpoint fallback after configured checkpoint paths.
+25. Documentation mode is locked to "implemented now" vs "approved target" labeling.
+26. PI-HAF flow migration target is immediate requirement: inverse-depth normalization to `[-1,1]`.
+27. Empty-space handling target is dataloader-enforced `L1 = L2` contract for opaque/no-front-layer cases.
+28. AdaLN-Zero scope is full conditioning path with `(layer_id, timestep)` through decoder residual blocks.
+29. Precision target is mixed BF16 global + FP32 bubble on wavelet-sensitive blocks (documented as target pending implementation).
+30. Stage B runtime contract target is dual-cap: 25 preferred, up to 30, hard stop at `min(24h, 30 epochs)`.
+31. Final-stop full real evaluation is mandatory at Stage B stop (1200-image benchmark contract).
+32. Depth-space migration is a retraining boundary; no checkpoint compatibility shim.
+
+## Clash Options and Chosen Paths
+
+1. Depth representation clash:
+- Current: positive-depth default supervision.
+- Options considered: keep positive, inverse-positive, inverse-normalized `[-1,1]`.
+- Selected: inverse-normalized `[-1,1]` as migration target.
+
+2. Empty-space supervision clash:
+- Current: independent per-layer supervision.
+- Options considered: doc-only, loss-only consistency, dataloader enforcement, hybrid.
+- Selected: dataloader-level enforcement (`L1 = L2` for opaque/no-front-layer regions).
+
+3. Conditioning clash:
+- Current: entry-level layer prompt conditioning.
+- Options considered: RHAG-only partial AdaLN, stub-first, full scope.
+- Selected: full-scope AdaLN-Zero target.
+
+4. Precision-policy clash:
+- Current: mixed precision with stability guards, but not full target policy contract.
+- Options considered: global FP32, global BF16, mixed BF16 + FP32 bubble.
+- Selected: mixed BF16 global + FP32 wavelet bubble target.
+
+5. Stage boundary/runtime clash:
+- Current: stage policy and cadence support exists.
+- Options considered: fractional, fixed, hybrid.
+- Selected: fixed Stage A (5 epochs) + Stage B dual-cap runtime policy.
 
 ## Key Risks
 
@@ -57,11 +92,15 @@ Scope: Track locked decisions, active risks, and unresolved questions for this p
 - Stage-gate verification commands can look like runtime regressions when required evidence/checkpoint artifacts are missing.
 9. Hardware-profile mismatch risk:
 - Running server profiles on lower-VRAM hosts now fails early by policy; operators must select the correct profile for available GPU class.
+10. Migration-gate drift risk:
+- Depth-space migration changes loss/metric distributions; promotion thresholds may drift unless recalibrated before promotion.
+11. Documentation drift risk:
+- If target behavior is documented as active too early, operators may assume unsupported runtime behavior.
 
 ## Open Questions (Still Explicit)
 
 1. Exact wavelet component weight schedule across Stage 1 and Stage 2.
-2. Exact numeric thresholds for declaring Stage A tuple trend "improving".
+2. Exact numeric thresholds for declaring Stage A tuple trend "improving" after depth-space migration.
 3. Whether Stage B launches ablation branch immediately or only after baseline completion.
 4. Whether fixture evidence generation should be part of default quickcheck CI path or remain opt-in per run.
 

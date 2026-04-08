@@ -1,6 +1,6 @@
 # PI-HAF Program State And Experiment Protocol
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 Scope: repository `lbp/lbp` only.
 
 ## Current Program Status (2026-04-07)
@@ -14,6 +14,21 @@ Scope: repository `lbp/lbp` only.
 7. Phase 9A scaffold wiring is active in orchestration: ablation payload logging, Stage-A post-eval gate checks, and Stage-B pre-gate checks.
 8. Server profiles now explicitly pin `architecture.backbone_fallback_approved: false` (`default`, `balanced`, `stable`) to make no-silent-fallback policy visible in config.
 9. Dated implementation note (2026-04-07): server preflight now enforces VRAM-aware profile checks (`hardware.min_vram_gb`) and quickcheck supports runtime fixture evidence emission through existing scripts.
+
+## Implemented vs Target Snapshot (2026-04-08)
+
+1. Implemented now:
+- Stage command orchestration, gate wiring, manifests, and tuple P/T/Q reporting contracts.
+- ConvNeXt-S distilled backbone policy as active baseline.
+
+2. Approved target (pending full implementation lock):
+- Dataloader-level empty-space rule (`L1 = L2` for opaque/no-front-layer cases).
+- Inverse-depth normalized training space bounded to `[-1,1]` for flow trajectory training.
+- AdaLN-Zero full-scope conditioning with `(layer_id, timestep)` through decoder residual blocks.
+- Stage B dual-cap runtime policy: 25 preferred, up to 30 if budget remains, hard stop at `min(24h, 30 epochs)` with mandatory final full real evaluation.
+
+3. Migration boundary decision:
+- Depth-space migration is a retraining boundary; legacy positive-depth checkpoints are not promoted across this boundary.
 
 ## Confirmed Current State
 
@@ -29,7 +44,7 @@ Scope: repository `lbp/lbp` only.
 
 ## Program Goal
 
-Run multiple controlled supervised experiments across models and pipelines, then pick the strongest candidate for a full 100-epoch train on complete data.
+Run multiple controlled supervised experiments across models and pipelines, then pick the strongest candidate under the current server budget contract (Stage B dual-cap runtime policy).
 
 ## Mandatory Workflow For Each Experiment
 
@@ -117,6 +132,7 @@ Run tags inside each experiment:
 4. Metrics checks:
 - Real benchmark gates use tuple metrics P/T/Q (`pairs`, `trips`, `quads`) as primary.
 - Local validation is logged at end-of-epoch; server validation is logged every 10 epochs.
+ - Final-stop full real evaluation is mandatory under Stage B closeout policy.
 5. Reproducibility checks:
 - Git commit hash, seed, and config fingerprint stored in manifests.
 

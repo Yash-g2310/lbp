@@ -1,18 +1,18 @@
 # Stage A Local Notebook Protocol
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 Scope: Error-proof local bring-up on limited local shards before server execution.
 
 ## Goal
 
-Validate end-to-end correctness and learning behavior on local setup in 4-5 epochs, with strict observability.
+Validate end-to-end correctness and learning behavior on local setup in fixed 5 epochs, with strict observability.
 
 ## Implemented Workflow Hook (2026-04-07)
 
 1. Stage A policy workflow is now available via CLI:
 - `python cli.py stage-a --config configs/local/dev.yaml --epochs 5`
 2. This workflow applies stage-policy runtime config generation and strict checks for:
-- 4-5 epoch window,
+- fixed 5-epoch window,
 - end-of-epoch periodic real eval cadence,
 - run-manifest metadata emission.
 3. Existing `train`/`train-eval` commands remain backward compatible.
@@ -46,10 +46,10 @@ Before epoch 1, log:
 - Synthetic: `image.png`, `depth_1.png` (and discovered `depth_k` fields when present).
 - Real: `image.png`, `tuples.json` roots (`layer_all`, `layer_first` when available).
 
-## Stage A Epoch Plan (4-5 Epoch)
+## Stage A Epoch Plan (Fixed 5 Epoch)
 
 1. Epoch window:
-- Run 4 or 5 epochs (fixed before run starts).
+- Run exactly 5 epochs (fixed before run starts).
 
 2. Loss and validation monitoring requirement:
 - All components must be tracked in logs each epoch, even if staged weighting applies by epoch.
@@ -91,8 +91,13 @@ All conditions must hold:
 1. No runtime errors (shape/schema/index/IO).
 2. All monitored loss components remain finite.
 3. Gradients remain finite and non-zero.
-4. Local tuple metrics are non-zero and show improving trend over the 4-5 epoch window.
+4. Local tuple metrics are non-zero and show improving trend over the fixed 5-epoch window.
 5. End-of-epoch validation logs are present for all Stage A epochs.
+
+## Migration Boundary Reminder
+
+1. Current runtime still contains mixed legacy/flow-capable paths by profile.
+2. The PI-HAF flow target contract (inverse-depth `[-1,1]` space and empty-space rule) is approved and must be treated as required migration work before claiming full Stage A parity.
 
 ## Required Outputs
 
