@@ -1,17 +1,20 @@
-"""Offline precomputation for frozen DINOv2 features into sharded .pt files."""
+"""Offline precomputation for frozen DINO features into sharded .pt files."""
 
 from __future__ import annotations
 
 import argparse
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 import torch
 import yaml
 from datasets import load_dataset
 import torchvision.transforms as transforms
 from tqdm import tqdm
+
+from lbp_project.models.backbone_loader import load_frozen_backbone
+from lbp_project.models.backbone_policy import resolve_backbone_spec
 
 
 def parse_args() -> argparse.Namespace:
@@ -65,16 +68,14 @@ def run_split(
     total = len(ds) if hasattr(ds, "__len__") else None
     iterator = enumerate(tqdm(ds, total=total, desc=f"Precompute {split}", unit="img"))
 
-    for i, sample in iterator:
+    for i, raw_sample in iterator:
+        sample = cast(Dict[str, Any], raw_sample)
         image_key = "image.png" if "image.png" in sample else "image"
         image = tfm(sample[image_key].convert("RGB")).unsqueeze(0).to(device)
         sample_id = get_sample_id(sample, i)
 
         with torch.no_grad():
-            feats = encoder.forward_features(image)["x_norm_patchtokens"]
-            b, n, c = feats.shape
-            hw = int(n ** 0.5)
-            dino = feats.permute(0, 2, 1).view(b, c, hw, hw).squeeze(0).cpu().contiguous()
+            dino = encoder(image).squeeze(0).cpu().contiguous()
 
         key = sample_id
         shard_data[key] = dino
@@ -122,10 +123,25 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() and cfg["hardware"]["device"] == "cuda" else "cpu")
-    encoder = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14").to(device)
+    backbone_spec = resolve_backbone_spec(cfg["architecture"])
+    encoder = load_frozen_backbone(backbone_spec, device=device)
     encoder.eval()
 
-    full_index: Dict[str, Dict[str, Dict[str, str]]] = {"samples": {}}
+    full_index: Dict[str, Any] = {
+        "metadata": {
+            "version": 2,
+            "backbone_backend": backbone_spec.backend,
+            "backbone_repo": backbone_spec.repo,
+            "backbone_model": backbone_spec.model,
+            "backbone_descriptor": backbone_spec.descriptor,
+            "dino_embed_dim": int(backbone_spec.expected_embed_dim),
+            "train_dataset_name": str(cfg["data"]["train_dataset_name"]),
+            "val_dataset_name": str(cfg["data"]["val_dataset_name"]),
+            "train_split": str(cfg["data"]["train_split"]),
+            "val_split": str(cfg["data"]["val_split"]),
+        },
+        "samples": {},
+    }
     for split_cfg in (
         (cfg["data"]["train_dataset_name"], cfg["data"]["train_split"]),
         (cfg["data"]["val_dataset_name"], cfg["data"]["val_split"]),

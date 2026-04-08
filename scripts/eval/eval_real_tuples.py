@@ -23,7 +23,14 @@ from lbp_project.config.io import load_yaml
 from lbp_project.data.dataset import PrecomputedFeatureStore, _extract_sample_id
 from lbp_project.models.factory import build_depth_model
 from lbp_project.utils.checkpoints import load_checkpoint_model
-from lbp_project.utils.metrics import evaluate_tuple_sample, merge_tuple_counts, summarize_tuple_counts
+from lbp_project.utils.eval_layers import predict_depth_by_layer, resolve_required_layers
+from lbp_project.utils.metrics import (
+    evaluate_tuple_sample,
+    evaluate_tuple_sample_multi_layer,
+    merge_tuple_counts,
+    summarize_tuple_counts,
+)
+from lbp_project.utils.run_manifest import build_run_manifest
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,6 +43,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--layer-key", default="", help="Single tuple layer key override")
     p.add_argument("--layer-keys", default="", help="Comma-separated layer keys, e.g. layer_all,layer_first")
     p.add_argument("--target-layer", type=int, default=-1, help="Model target layer override")
+    p.add_argument(
+        "--disable-multi-pass",
+        action="store_true",
+        help="Disable tuple-driven multi-pass layer inference and force single-pass target layer mode",
+    )
     p.add_argument(
         "--use-precomputed-dino",
         action="store_true",
@@ -86,6 +98,7 @@ def main() -> None:
         raise ValueError("No layer keys configured")
 
     target_layer = args.target_layer if args.target_layer > 0 else int(eval_cfg.get("target_layer", 1))
+    multi_pass_eval = bool(eval_cfg.get("multi_pass_real_eval", True)) and not args.disable_multi_pass
     max_samples = args.max_samples if args.max_samples > 0 else int(eval_cfg.get("real_max_samples", 0))
     dataset_name = str(eval_cfg.get("real_dataset_name", "princeton-vl/LayeredDepth"))
 
@@ -146,6 +159,7 @@ def main() -> None:
                 "quads": {"correct": 0, "total": 0},
                 "all": {"correct": 0, "total": 0},
             }
+            missing_layer_tuples_total = 0
 
             processed = 0
             with torch.no_grad():
@@ -163,16 +177,49 @@ def main() -> None:
                         sample_id = _extract_sample_id(sample, i)
                         precomputed = feature_store.get(split, sample_id).unsqueeze(0).to(device)
 
-                    amp_ctx = torch.autocast(device_type="cuda", enabled=amp_enabled) if device.type == "cuda" else nullcontext()
-                    with amp_ctx:
-                        pred = model(
+                    if multi_pass_eval:
+                        required_layers = resolve_required_layers(
+                            sample,
+                            layer_key=layer_key,
+                            target_layer_override=target_layer if args.target_layer > 0 else None,
+                        )
+                        if not required_layers:
+                            processed += 1
+                            continue
+
+                        pred_by_layer = predict_depth_by_layer(
+                            model,
                             img,
-                            target_layer=target_layer,
-                            return_intermediate=False,
+                            required_layers,
+                            amp_enabled=amp_enabled,
+                            device=device,
                             precomputed_dino=precomputed,
                         )
 
-                    counts = evaluate_tuple_sample(pred, sample, original_size=original_size, layer_key=layer_key)
+                        counts = evaluate_tuple_sample_multi_layer(
+                            pred_by_layer,
+                            sample,
+                            original_size=original_size,
+                            layer_key=layer_key,
+                        )
+                        missing_layer_tuples_total += int(
+                            counts.get("missing_layer_tuples", {}).get("total", 0)
+                        )
+                    else:
+                        amp_ctx = (
+                            torch.autocast(device_type="cuda", enabled=amp_enabled)
+                            if device.type == "cuda"
+                            else nullcontext()
+                        )
+                        with amp_ctx:
+                            pred = model(
+                                img,
+                                target_layer=target_layer,
+                                return_intermediate=False,
+                                precomputed_dino=precomputed,
+                            )
+                        counts = evaluate_tuple_sample(pred, sample, original_size=original_size, layer_key=layer_key)
+
                     merge_tuple_counts(totals, counts)
                     processed += 1
 
@@ -182,6 +229,7 @@ def main() -> None:
                 "split": split,
                 "layer_key": layer_key,
                 "samples_evaluated": processed,
+                "missing_layer_tuples": float(missing_layer_tuples_total),
                 **summary,
             }
             if per_eval[key].get("all_total", 0.0) == 0.0:
@@ -192,10 +240,24 @@ def main() -> None:
 
     aggregate_summary = summarize_tuple_counts(aggregate_counts)
     report = {
+        "metadata": build_run_manifest(
+            cfg,
+            config_path=args.config,
+            stage_mode=str(cfg.get("experiment", {}).get("stage_mode", "unknown")),
+            project_root=PROJECT_ROOT,
+            extra={
+                "script": "eval_real_tuples",
+                "checkpoint": str(checkpoint_path),
+                "splits": splits,
+                "layer_keys": layer_keys,
+                "max_samples": int(max_samples),
+            },
+        ),
         "dataset": dataset_name,
         "splits": splits,
         "layer_keys": layer_keys,
         "target_layer": target_layer,
+        "multi_pass_real_eval": multi_pass_eval,
         "use_precomputed_dino": use_precomputed_dino,
         "per_eval": per_eval,
         "aggregate": aggregate_summary,

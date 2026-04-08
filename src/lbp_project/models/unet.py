@@ -126,6 +126,7 @@ class STEMEnhancementNet(nn.Module):
             return {
                 'bottleneck': self.bottleneck_proj(bottleneck_feat),
                 'decoder': self.decoder_proj(decoder_feat),
-                'final': output
+                'final': output,
+                'decoder_features': decoder_feat,
             }
         return output

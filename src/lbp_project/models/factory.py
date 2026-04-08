@@ -24,6 +24,17 @@ def build_depth_model(
         num_rhag=int(cfg["architecture"]["num_rhag"]),
         window_size=int(cfg["architecture"]["window_size"]),
         dino_embed_dim=int(cfg["architecture"]["dino_embed_dim"]),
+        backbone_repo=str(cfg["architecture"].get("backbone_repo", "timm")),
+        backbone_model=str(
+            cfg["architecture"].get("backbone_model", "timm/convnext_small.dinov3_lvd1689m")
+        ),
+        backbone_backend=str(cfg["architecture"].get("backbone_backend", "")),
+        backbone_fallback_models=cfg["architecture"].get("backbone_fallback_models"),
+        backbone_stop_on_failure=bool(cfg["architecture"].get("backbone_stop_on_failure", True)),
+        backbone_fallback_approved=bool(cfg["architecture"].get("backbone_fallback_approved", False)),
+        max_layer_id=int(cfg["architecture"].get("max_layer_id", 8)),
+        enable_velocity_head=bool(cfg["architecture"].get("enable_velocity_head", False)),
+        velocity_hidden_channels=int(cfg["architecture"].get("velocity_hidden_channels", 64)),
         fft_mode=cfg["architecture"]["fft_mode"],
         fft_pad_size=int(cfg["architecture"]["fft_pad_size"]),
         use_precomputed_dino=bool(use_precomputed_dino),
