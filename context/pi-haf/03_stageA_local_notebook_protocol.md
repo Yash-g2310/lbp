@@ -35,6 +35,11 @@ Validate end-to-end correctness and learning behavior on local setup in fixed 5 
 - Use retained reindexed real shards for tuple evaluation checks.
 - Treat local shard counts as runtime availability, not dataset definition.
 
+3. Local data-loading policy (implemented):
+- `data.allow_partial_local_shards=true` and `data.allow_hf_downloads=false` in local profiles.
+- Local Stage A must load only locally available Arrow shards (no remote shard download attempts).
+- Missing local shard minimum for train/validation is a hard startup failure.
+
 ## Required Startup Logs
 
 Before epoch 1, log:
@@ -96,8 +101,10 @@ All conditions must hold:
 
 ## Migration Boundary Reminder
 
-1. Current runtime still contains mixed legacy/flow-capable paths by profile.
-2. The PI-HAF flow target contract (inverse-depth `[-1,1]` space and empty-space rule) is approved and must be treated as required migration work before claiming full Stage A parity.
+1. Active runtime now enforces PI-HAF flow-space migration contracts in `lbp_project`:
+- inverse-depth normalized flow target space `[-1,1]`,
+- dataloader empty-space rule (`L1 = L2`) for opaque/no-front-layer regions.
+2. Stage A parity checks must continue to verify these contracts remain active in the selected profile/runtime config.
 
 ## Required Outputs
 

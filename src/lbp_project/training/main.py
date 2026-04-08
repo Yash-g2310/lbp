@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict, Tuple, cast
@@ -37,6 +40,25 @@ from lbp_project.utils.losses import (
     inverse_normalized_to_metric_depth,
     reconstruct_depth_from_velocity,
 )
+from lbp_project.utils.run_manifest import config_sha256
+
+
+STAGE_A = "stage_a"
+STAGE_B = "stage_b"
+STAGE_B_FINAL_REAL_SPLITS = ("validation", "test")
+STAGE_B_FINAL_REAL_LAYER_KEYS = ("layer_all", "layer_first")
+
+
+@dataclass
+class StageBRuntimeContract:
+    enabled: bool
+    max_epochs: int
+    max_runtime_hours: float
+    job_start_ts: float
+    job_start_source: str
+    hard_deadline_ts: float
+    require_terminal_full_real_eval: bool
+    hard_fail_on_terminal_eval_failure: bool
 
 
 def resolve_amp_dtype(hardware_cfg: Dict[str, Any], device: torch.device) -> torch.dtype:
@@ -692,6 +714,9 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     scaler: Any,
+    *,
+    config_sha256_value: str,
+    source_config_path: str,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -699,6 +724,8 @@ def save_checkpoint(
             "checkpoint_version": 2,
             "epoch": epoch,
             "best_val_loss": best_val_loss,
+            "config_sha256": str(config_sha256_value),
+            "source_config_path": str(source_config_path),
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "scheduler_state": scheduler.state_dict(),
@@ -780,6 +807,176 @@ def run_periodic_real_eval(
     }
 
 
+def _resolve_job_start_ts(fallback_ts: float) -> Tuple[float, str]:
+    fallback = fallback_ts if fallback_ts > 0.0 else time.time()
+    for key in ("LBP_JOB_START_TS", "SLURM_JOB_START_TS"):
+        raw = str(os.environ.get(key, "")).strip()
+        if not raw:
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            continue
+        if value > 0.0:
+            return value, key
+    return fallback, "process_start_fallback"
+
+
+def resolve_stage_b_runtime_contract(
+    cfg: Dict[str, Any],
+    stage_mode: str,
+    process_start_ts: float,
+) -> StageBRuntimeContract:
+    eval_cfg = cfg.get("evaluation", {})
+    runtime_cfg = eval_cfg.get("stage_b_runtime", {})
+    if runtime_cfg and not isinstance(runtime_cfg, dict):
+        raise ValueError("evaluation.stage_b_runtime must be a mapping when provided")
+
+    runtime_cfg = runtime_cfg if isinstance(runtime_cfg, dict) else {}
+    enabled = stage_mode == STAGE_B and bool(runtime_cfg.get("enabled", True))
+
+    max_epochs = int(runtime_cfg.get("max_epochs", 30))
+    if max_epochs < 1:
+        raise ValueError(f"evaluation.stage_b_runtime.max_epochs must be >= 1, got {max_epochs}")
+
+    max_runtime_hours = float(runtime_cfg.get("max_runtime_hours", 24.0))
+    if max_runtime_hours <= 0.0:
+        raise ValueError(
+            "evaluation.stage_b_runtime.max_runtime_hours must be > 0, "
+            f"got {max_runtime_hours}"
+        )
+
+    require_terminal_full_real_eval = bool(runtime_cfg.get("require_terminal_full_real_eval", True))
+    hard_fail_on_terminal_eval_failure = bool(
+        runtime_cfg.get("hard_fail_on_terminal_eval_failure", True)
+    )
+    job_start_ts, source = _resolve_job_start_ts(process_start_ts)
+    deadline_ts = job_start_ts + max_runtime_hours * 3600.0
+
+    return StageBRuntimeContract(
+        enabled=enabled,
+        max_epochs=max_epochs,
+        max_runtime_hours=max_runtime_hours,
+        job_start_ts=job_start_ts,
+        job_start_source=source,
+        hard_deadline_ts=deadline_ts,
+        require_terminal_full_real_eval=require_terminal_full_real_eval,
+        hard_fail_on_terminal_eval_failure=hard_fail_on_terminal_eval_failure,
+    )
+
+
+def write_stage_b_runtime_state(report_dir: Path, payload: Dict[str, Any]) -> Path:
+    report_dir.mkdir(parents=True, exist_ok=True)
+    out_path = report_dir / "stage_b_runtime_state.json"
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return out_path
+
+
+def resolve_terminal_eval_checkpoint(
+    eval_cfg: Dict[str, Any],
+    latest_ckpt: Path,
+    best_ckpt: Path,
+) -> Path:
+    runtime_cfg = eval_cfg.get("stage_b_runtime", {})
+    prefer_latest = True
+    if isinstance(runtime_cfg, dict):
+        prefer_latest = bool(runtime_cfg.get("terminal_eval_use_latest", True))
+
+    candidates = [latest_ckpt, best_ckpt] if prefer_latest else [best_ckpt, latest_ckpt]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    raise FileNotFoundError(
+        "No checkpoint available for Stage B terminal evaluation. "
+        f"Checked: {[str(c) for c in candidates]}"
+    )
+
+
+def run_terminal_full_real_eval(
+    config_path: str,
+    cfg: Dict[str, Any],
+    checkpoint_path: Path,
+    stop_reason: str,
+    log_to_terminal: bool,
+) -> Dict[str, Any]:
+    eval_cfg = cfg.get("evaluation", {})
+    report_dir = Path(str(eval_cfg.get("report_dir", "./runs/current/reports")))
+    report_dir.mkdir(parents=True, exist_ok=True)
+    output_path = report_dir / "real_tuple_eval_terminal_full.json"
+
+    split_arg = ",".join(STAGE_B_FINAL_REAL_SPLITS)
+    layer_key_arg = ",".join(STAGE_B_FINAL_REAL_LAYER_KEYS)
+    target_layer = int(eval_cfg.get("target_layer", 1))
+
+    cmd = [
+        sys.executable,
+        "scripts/eval/eval_real_tuples.py",
+        "--config",
+        config_path,
+        "--checkpoint",
+        str(checkpoint_path),
+        "--splits",
+        split_arg,
+        "--layer-keys",
+        layer_key_arg,
+        "--target-layer",
+        str(target_layer),
+        "--max-samples",
+        "0",
+        "--output",
+        str(output_path),
+    ]
+
+    if bool(eval_cfg.get("real_use_precomputed_dino", False)):
+        cmd.append("--use-precomputed-dino")
+        idx_override = str(eval_cfg.get("real_precomputed_index_path", "")).strip()
+        if idx_override:
+            cmd.extend(["--precomputed-index-path", idx_override])
+
+    log_terminal(
+        log_to_terminal,
+        (
+            "[stage-b][terminal-eval] running strict final full real eval "
+            f"stop_reason={stop_reason} checkpoint={checkpoint_path}"
+        ),
+    )
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        stderr_tail = ""
+        if exc.stderr:
+            stderr_tail = "\n".join(exc.stderr.strip().splitlines()[-10:])
+        raise RuntimeError(
+            "Stage B terminal full real eval failed with non-zero exit code. "
+            f"returncode={exc.returncode}\n"
+            f"stderr_tail={stderr_tail}"
+        ) from exc
+
+    try:
+        report = json.loads(output_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            "Stage B terminal full real eval produced an unreadable report at "
+            f"{output_path}: {exc}"
+        ) from exc
+
+    agg = report.get("aggregate", {})
+    return {
+        "report_path": str(output_path),
+        "checkpoint": str(checkpoint_path),
+        "stop_reason": stop_reason,
+        "splits": list(STAGE_B_FINAL_REAL_SPLITS),
+        "layer_keys": list(STAGE_B_FINAL_REAL_LAYER_KEYS),
+        "max_samples": 0,
+        "aggregate": {
+            "pairs_acc": float(agg.get("pairs_acc", 0.0)),
+            "trips_acc": float(agg.get("trips_acc", 0.0)),
+            "quads_acc": float(agg.get("quads_acc", 0.0)),
+            "all_acc": float(agg.get("all_acc", 0.0)),
+        },
+    }
+
+
 def maybe_resume(
     path: Path,
     model: torch.nn.Module,
@@ -787,11 +984,39 @@ def maybe_resume(
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     scaler: Any,
     device: torch.device,
+    *,
+    resume_enabled: bool,
+    expected_config_sha256: str,
+    require_config_sha256_match: bool,
+    fail_on_config_mismatch: bool,
+    log_to_terminal: bool,
 ) -> Tuple[int, float]:
+    if not bool(resume_enabled):
+        log_terminal(log_to_terminal, "[resume] disabled by config; starting from epoch 0")
+        return 0, float("inf")
+
     if not path.exists():
         return 0, float("inf")
 
     checkpoint = torch.load(path, map_location=device)
+
+    observed_config_sha = str(checkpoint.get("config_sha256", "")).strip()
+    if require_config_sha256_match:
+        mismatch = (not observed_config_sha) or (observed_config_sha != str(expected_config_sha256).strip())
+        if mismatch:
+            msg = (
+                "Resume checkpoint config hash mismatch. "
+                f"checkpoint={path} observed={observed_config_sha or '<missing>'} "
+                f"expected={expected_config_sha256}"
+            )
+            if fail_on_config_mismatch:
+                raise RuntimeError(msg)
+            log_terminal(
+                log_to_terminal,
+                f"[resume][warn] {msg}; ignoring checkpoint and starting from epoch 0",
+            )
+            return 0, float("inf")
+
     model_key = "model_state" if "model_state" in checkpoint else "model_state_dict"
     opt_key = "optimizer_state" if "optimizer_state" in checkpoint else "optimizer_state_dict"
     sch_key = "scheduler_state" if "scheduler_state" in checkpoint else "scheduler_state_dict"
@@ -833,12 +1058,21 @@ def maybe_resume(
         pass
 
     best_val = checkpoint.get("best_val_loss", checkpoint.get("best_loss", float("inf")))
+    log_terminal(
+        log_to_terminal,
+        (
+            f"[resume] loaded checkpoint={path} epoch={int(checkpoint['epoch'])} "
+            f"config_sha256={observed_config_sha or '<missing>'}"
+        ),
+    )
     return int(checkpoint["epoch"]) + 1, float(best_val)
 
 
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
+    run_config_sha = config_sha256(config)
+    process_start_ts = time.time()
     ablation_plan = resolve_ablation_plan(config)
     ablation_payload = ablation_plan_payload(ablation_plan)
 
@@ -865,12 +1099,28 @@ def main() -> None:
     amp_scaler_enabled = amp_enabled and amp_dtype == torch.float16
     main_process = is_main_process()
     log_cfg = config.get("logging", {})
+    eval_cfg = config.get("evaluation", {})
     log_to_terminal = bool(log_cfg.get("log_to_terminal", True))
     verbose_components = bool(log_cfg.get("verbose_components", True))
-    periodic_eval_every = int(config.get("evaluation", {}).get("periodic_real_eval_every_epochs", 0))
+    resume_cfg = config.get("training", {}).get("resume", {})
+    if not isinstance(resume_cfg, dict):
+        raise ValueError("training.resume must be a mapping when provided")
+    resume_enabled = bool(resume_cfg.get("enabled", True))
+    resume_require_config_sha256_match = bool(
+        resume_cfg.get("require_config_sha256_match", True)
+    )
+    resume_fail_on_config_mismatch = bool(
+        resume_cfg.get("fail_on_config_mismatch", True)
+    )
+    periodic_eval_every = int(eval_cfg.get("periodic_real_eval_every_epochs", 0))
     staged_cfg = config.get("training", {}).get("staged_losses", {})
     loss_mode = resolve_loss_mode(config)
     flow_mode_enabled = loss_mode == "flow_staged"
+    stage_b_contract = resolve_stage_b_runtime_contract(
+        config,
+        stage_mode=inferred_stage_mode,
+        process_start_ts=process_start_ts,
+    )
 
     fft_mode = "fp32" if force_fp32_impl else config["architecture"]["fft_mode"]
     model_cfg = dict(config)
@@ -951,8 +1201,27 @@ def main() -> None:
     latest_ckpt = ckpt_dir / ckpt_cfg["latest_name"]
     best_ckpt = ckpt_dir / ckpt_cfg["best_name"]
 
-    start_epoch, best_val_loss = maybe_resume(latest_ckpt, model, optimizer, scheduler, scaler, device)
+    start_epoch, best_val_loss = maybe_resume(
+        latest_ckpt,
+        model,
+        optimizer,
+        scheduler,
+        scaler,
+        device,
+        resume_enabled=resume_enabled,
+        expected_config_sha256=run_config_sha,
+        require_config_sha256_match=resume_require_config_sha256_match,
+        fail_on_config_mismatch=resume_fail_on_config_mismatch,
+        log_to_terminal=log_to_terminal,
+    )
     run = setup_wandb(config, model=model if main_process else None)
+    report_dir = Path(str(eval_cfg.get("report_dir", "./runs/current/reports")))
+    stage_b_state_path = report_dir / "stage_b_runtime_state.json"
+    stage_b_stop_reason: str | None = None
+    stage_b_stop_epoch: int | None = None
+    stage_b_partial_epoch = False
+    stage_b_terminal_eval_result: Dict[str, Any] | None = None
+    last_completed_epoch = start_epoch - 1
 
     accum_steps = int(config["training"]["accum_steps"])
     max_epochs = int(config["training"]["epochs"])
@@ -983,12 +1252,40 @@ def main() -> None:
             f"amp_dtype={str(amp_dtype).replace('torch.', '')} "
             f"force_fp32_impl={force_fp32_impl} fft_mode={fft_mode} "
             f"precomputed_dino={bool(config['data'].get('use_precomputed_dino', False))} "
-            f"loss_mode={loss_mode} start_epoch={start_epoch}"
+            f"loss_mode={loss_mode} start_epoch={start_epoch} config_sha256={run_config_sha}"
         ),
     )
     if run is not None:
         log_terminal(log_to_terminal, f"[train] W&B enabled: project={log_cfg.get('project')} run={run.name}")
     log_terminal(log_to_terminal, f"[train] Logging cadence: every {log_every} train steps")
+
+    if stage_b_contract.enabled:
+        log_terminal(
+            log_to_terminal,
+            (
+                "[stage-b][runtime-contract] "
+                f"max_epochs={stage_b_contract.max_epochs} "
+                f"max_runtime_hours={stage_b_contract.max_runtime_hours:.2f} "
+                f"job_start_source={stage_b_contract.job_start_source} "
+                f"job_start_ts={stage_b_contract.job_start_ts:.3f} "
+                f"deadline_ts={stage_b_contract.hard_deadline_ts:.3f}"
+            ),
+        )
+        if main_process:
+            write_stage_b_runtime_state(
+                report_dir,
+                {
+                    "status": "running",
+                    "stage_mode": inferred_stage_mode,
+                    "max_epochs": stage_b_contract.max_epochs,
+                    "max_runtime_hours": stage_b_contract.max_runtime_hours,
+                    "job_start_ts": stage_b_contract.job_start_ts,
+                    "job_start_source": stage_b_contract.job_start_source,
+                    "deadline_ts": stage_b_contract.hard_deadline_ts,
+                    "require_terminal_full_real_eval": stage_b_contract.require_terminal_full_real_eval,
+                    "hard_fail_on_terminal_eval_failure": stage_b_contract.hard_fail_on_terminal_eval_failure,
+                },
+            )
 
     sched_cfg = config["training"]["scheduler"]
     if sched_cfg["name"].lower() == "cosine":
@@ -1000,8 +1297,36 @@ def main() -> None:
             )
 
     for epoch in range(start_epoch, max_epochs):
+        if stage_b_contract.enabled:
+            if epoch >= stage_b_contract.max_epochs:
+                stage_b_stop_reason = f"epoch_cap_reached_{stage_b_contract.max_epochs}"
+                stage_b_stop_epoch = epoch
+                log_terminal(
+                    log_to_terminal,
+                    (
+                        "[stage-b][stop] stopping before epoch start due to epoch cap "
+                        f"(max_epochs={stage_b_contract.max_epochs})"
+                    ),
+                )
+                break
+
+            now_ts = time.time()
+            if now_ts >= stage_b_contract.hard_deadline_ts:
+                elapsed_h = (now_ts - stage_b_contract.job_start_ts) / 3600.0
+                stage_b_stop_reason = f"time_cap_reached_{stage_b_contract.max_runtime_hours:.2f}h"
+                stage_b_stop_epoch = epoch
+                log_terminal(
+                    log_to_terminal,
+                    (
+                        "[stage-b][stop] stopping before epoch start due to wall-clock cap "
+                        f"elapsed_hours={elapsed_h:.3f} max_hours={stage_b_contract.max_runtime_hours:.3f}"
+                    ),
+                )
+                break
+
         model.train()
         optimizer.zero_grad(set_to_none=True)
+        stop_current_epoch_early = False
 
         epoch_train_loss = 0.0
         step_counter = 0
@@ -1134,46 +1459,87 @@ def main() -> None:
             should_step = ((step + 1) % accum_steps == 0) or ((step + 1) == len(train_loader))
             if should_step:
                 scaler.unscale_(optimizer)
-                # Debug probe: detect non-finite gradients before clipping/step.
+                skip_step = False
+                nonfinite_grad_param = ""
                 for n, p in model.named_parameters():
                     if p.grad is not None and not torch.isfinite(p.grad).all():
-                        torch.save({
-                            'epoch': epoch,
-                            'step': step,
-                            'global_step': global_step,
-                            'bad_param': n,
-                            'model_state': model.state_dict(),
-                            'optimizer_state': optimizer.state_dict(),
-                        }, 'nan_dbg_grad.pt')
-                        raise RuntimeError(f"NaN gradient detected for param {n} at epoch={epoch+1} step={step+1}")
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
-                skip_step = False
-                if not torch.isfinite(grad_norm):
+                        nonfinite_grad_param = n
+                        break
+
+                if nonfinite_grad_param:
+                    torch.save({
+                        'epoch': epoch,
+                        'step': step,
+                        'global_step': global_step,
+                        'bad_param': nonfinite_grad_param,
+                        'model_state': model.state_dict(),
+                        'optimizer_state': optimizer.state_dict(),
+                    }, 'nan_dbg_grad.pt')
+
                     if amp_scaler_enabled and amp_runtime_enabled:
                         log_terminal(
                             log_to_terminal,
-                            f"[warn] non-finite grad_norm at epoch={epoch+1} step={step+1}; "
-                            "allowing GradScaler to handle overflow/skip",
+                            (
+                                f"[warn] non-finite gradient detected for param {nonfinite_grad_param} "
+                                f"at epoch={epoch+1} step={step+1}; skipping optimizer step"
+                            ),
                         )
+                        skip_step = True
                         consecutive_nonfinite_steps += 1
+                        if auto_disable_amp_on_nonfinite:
+                            amp_runtime_enabled = False
+                            scaler = build_grad_scaler(device, enabled=False)
+                            log_terminal(
+                                log_to_terminal,
+                                (
+                                    "[warn] disabling AMP after non-finite gradient event; "
+                                    f"bad_param={nonfinite_grad_param}"
+                                ),
+                            )
                     elif skip_nonfinite_grad_step:
                         log_terminal(
                             log_to_terminal,
-                            f"[warn] non-finite grad_norm at epoch={epoch+1} step={step+1}; skipping optimizer step",
+                            (
+                                f"[warn] non-finite gradient detected for param {nonfinite_grad_param} "
+                                f"at epoch={epoch+1} step={step+1}; skipping optimizer step"
+                            ),
                         )
                         skip_step = True
                         consecutive_nonfinite_steps += 1
                     else:
                         raise RuntimeError(
-                            f"Non-finite gradient norm detected at epoch={epoch+1} step={step+1}: grad_norm={float(grad_norm)}"
+                            f"NaN gradient detected for param {nonfinite_grad_param} at epoch={epoch+1} step={step+1}"
                         )
-                    if consecutive_nonfinite_steps >= max(1, max_consecutive_nonfinite_steps):
-                        raise RuntimeError(
-                            "Repeated non-finite grad_norm events detected; aborting to avoid silent training collapse. "
-                            f"count={consecutive_nonfinite_steps} epoch={epoch+1} step={step+1}"
-                        )
+                    grad_norm = torch.tensor(float("nan"), device=device)
                 else:
-                    consecutive_nonfinite_steps = 0
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+                    if not torch.isfinite(grad_norm):
+                        if amp_scaler_enabled and amp_runtime_enabled:
+                            log_terminal(
+                                log_to_terminal,
+                                f"[warn] non-finite grad_norm at epoch={epoch+1} step={step+1}; "
+                                "allowing GradScaler to handle overflow/skip",
+                            )
+                            consecutive_nonfinite_steps += 1
+                        elif skip_nonfinite_grad_step:
+                            log_terminal(
+                                log_to_terminal,
+                                f"[warn] non-finite grad_norm at epoch={epoch+1} step={step+1}; skipping optimizer step",
+                            )
+                            skip_step = True
+                            consecutive_nonfinite_steps += 1
+                        else:
+                            raise RuntimeError(
+                                f"Non-finite gradient norm detected at epoch={epoch+1} step={step+1}: grad_norm={float(grad_norm)}"
+                            )
+                    else:
+                        consecutive_nonfinite_steps = 0
+
+                if consecutive_nonfinite_steps >= max(1, max_consecutive_nonfinite_steps):
+                    raise RuntimeError(
+                        "Repeated non-finite gradient events detected; aborting to avoid silent training collapse. "
+                        f"count={consecutive_nonfinite_steps} epoch={epoch+1} step={step+1}"
+                    )
 
                 if not skip_step:
                     scale_before = scaler.get_scale()
@@ -1284,6 +1650,46 @@ def main() -> None:
                         log_terminal(True, f"{base_msg} {comp_msg}")
                     else:
                         log_terminal(True, base_msg)
+
+            if stage_b_contract.enabled and time.time() >= stage_b_contract.hard_deadline_ts:
+                elapsed_h = (time.time() - stage_b_contract.job_start_ts) / 3600.0
+                stage_b_stop_reason = f"time_cap_reached_{stage_b_contract.max_runtime_hours:.2f}h"
+                stage_b_stop_epoch = epoch + 1
+                stage_b_partial_epoch = True
+                stop_current_epoch_early = True
+                log_terminal(
+                    log_to_terminal,
+                    (
+                        "[stage-b][stop] wall-clock cap reached during epoch; "
+                        f"epoch={epoch+1} step={step+1} elapsed_hours={elapsed_h:.3f}"
+                    ),
+                )
+                break
+
+        if stop_current_epoch_early:
+            if step_counter > 0:
+                save_checkpoint(
+                    latest_ckpt,
+                    epoch,
+                    best_val_loss,
+                    model,
+                    optimizer,
+                    scheduler,
+                    scaler,
+                    config_sha256_value=run_config_sha,
+                    source_config_path=args.config,
+                )
+                log_terminal(
+                    log_to_terminal,
+                    f"[stage-b][stop] saved latest checkpoint before terminal eval: {latest_ckpt}",
+                )
+                last_completed_epoch = epoch
+            else:
+                log_terminal(
+                    log_to_terminal,
+                    "[stage-b][stop] wall-clock cap triggered before any train step in epoch; no checkpoint update",
+                )
+            break
 
         train_loss = epoch_train_loss / max(1, step_counter)
 
@@ -1412,11 +1818,31 @@ def main() -> None:
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            save_checkpoint(best_ckpt, epoch, best_val_loss, model, optimizer, scheduler, scaler)
+            save_checkpoint(
+                best_ckpt,
+                epoch,
+                best_val_loss,
+                model,
+                optimizer,
+                scheduler,
+                scaler,
+                config_sha256_value=run_config_sha,
+                source_config_path=args.config,
+            )
             log_terminal(log_to_terminal, f"[ckpt] Saved new best checkpoint: {best_ckpt} (val_loss={val_loss:.5f})")
 
         if (epoch + 1) % int(ckpt_cfg.get("save_every_epochs", 1)) == 0:
-            save_checkpoint(latest_ckpt, epoch, best_val_loss, model, optimizer, scheduler, scaler)
+            save_checkpoint(
+                latest_ckpt,
+                epoch,
+                best_val_loss,
+                model,
+                optimizer,
+                scheduler,
+                scaler,
+                config_sha256_value=run_config_sha,
+                source_config_path=args.config,
+            )
             log_terminal(log_to_terminal, f"[ckpt] Updated latest checkpoint: {latest_ckpt}")
 
         if main_process and periodic_eval_every > 0 and ((epoch + 1) % periodic_eval_every == 0):
@@ -1449,6 +1875,127 @@ def main() -> None:
                         },
                         step=global_step,
                     )
+
+        last_completed_epoch = epoch
+        if stage_b_contract.enabled and (epoch + 1) >= stage_b_contract.max_epochs:
+            stage_b_stop_reason = f"epoch_cap_reached_{stage_b_contract.max_epochs}"
+            stage_b_stop_epoch = epoch + 1
+            log_terminal(
+                log_to_terminal,
+                (
+                    "[stage-b][stop] epoch cap reached after checkpoint/eval sequence "
+                    f"(epoch={epoch+1})"
+                ),
+            )
+            break
+
+    if stage_b_contract.enabled:
+        if stage_b_stop_reason is None:
+            stage_b_stop_reason = "train_loop_completed"
+            stage_b_stop_epoch = last_completed_epoch + 1 if last_completed_epoch >= 0 else 0
+
+        if not latest_ckpt.exists() and last_completed_epoch >= 0:
+            save_checkpoint(
+                latest_ckpt,
+                last_completed_epoch,
+                best_val_loss,
+                model,
+                optimizer,
+                scheduler,
+                scaler,
+                config_sha256_value=run_config_sha,
+                source_config_path=args.config,
+            )
+            log_terminal(
+                log_to_terminal,
+                f"[stage-b] latest checkpoint missing; saved terminal checkpoint to {latest_ckpt}",
+            )
+
+        terminal_eval_error: str | None = None
+        if stage_b_contract.require_terminal_full_real_eval and main_process:
+            terminal_checkpoint = resolve_terminal_eval_checkpoint(eval_cfg, latest_ckpt, best_ckpt)
+            try:
+                stage_b_terminal_eval_result = run_terminal_full_real_eval(
+                    config_path=args.config,
+                    cfg=config,
+                    checkpoint_path=terminal_checkpoint,
+                    stop_reason=stage_b_stop_reason,
+                    log_to_terminal=log_to_terminal,
+                )
+                agg = stage_b_terminal_eval_result.get("aggregate", {})
+                log_terminal(
+                    log_to_terminal,
+                    (
+                        "[stage-b][terminal-eval] completed "
+                        f"pairs_acc={float(agg.get('pairs_acc', 0.0)):.4f} "
+                        f"trips_acc={float(agg.get('trips_acc', 0.0)):.4f} "
+                        f"quads_acc={float(agg.get('quads_acc', 0.0)):.4f} "
+                        f"all_acc={float(agg.get('all_acc', 0.0)):.4f}"
+                    ),
+                )
+                if run is not None:
+                    run.log(
+                        {
+                            "stage_b_terminal_eval/pairs_acc": float(agg.get("pairs_acc", 0.0)),
+                            "stage_b_terminal_eval/trips_acc": float(agg.get("trips_acc", 0.0)),
+                            "stage_b_terminal_eval/quads_acc": float(agg.get("quads_acc", 0.0)),
+                            "stage_b_terminal_eval/all_acc": float(agg.get("all_acc", 0.0)),
+                            "stage_b_terminal_eval/max_samples": 0,
+                        },
+                        step=global_step,
+                    )
+            except Exception as exc:
+                terminal_eval_error = str(exc)
+                log_terminal(
+                    log_to_terminal,
+                    f"[stage-b][terminal-eval][error] {terminal_eval_error}",
+                )
+                if stage_b_contract.hard_fail_on_terminal_eval_failure:
+                    if main_process:
+                        write_stage_b_runtime_state(
+                            report_dir,
+                            {
+                                "status": "failed_terminal_eval",
+                                "stop_reason": stage_b_stop_reason,
+                                "stop_epoch": stage_b_stop_epoch,
+                                "partial_epoch": stage_b_partial_epoch,
+                                "last_completed_epoch": last_completed_epoch,
+                                "global_step": global_step,
+                                "max_epochs": stage_b_contract.max_epochs,
+                                "max_runtime_hours": stage_b_contract.max_runtime_hours,
+                                "job_start_ts": stage_b_contract.job_start_ts,
+                                "job_start_source": stage_b_contract.job_start_source,
+                                "deadline_ts": stage_b_contract.hard_deadline_ts,
+                                "terminal_eval_error": terminal_eval_error,
+                            },
+                        )
+                    if run is not None:
+                        run.finish()
+                        log_terminal(log_to_terminal, "[wandb] Run finished and synced.")
+                    raise
+
+        if main_process:
+            write_stage_b_runtime_state(
+                report_dir,
+                {
+                    "status": "stopped",
+                    "stop_reason": stage_b_stop_reason,
+                    "stop_epoch": stage_b_stop_epoch,
+                    "partial_epoch": stage_b_partial_epoch,
+                    "last_completed_epoch": last_completed_epoch,
+                    "global_step": global_step,
+                    "max_epochs": stage_b_contract.max_epochs,
+                    "max_runtime_hours": stage_b_contract.max_runtime_hours,
+                    "job_start_ts": stage_b_contract.job_start_ts,
+                    "job_start_source": stage_b_contract.job_start_source,
+                    "deadline_ts": stage_b_contract.hard_deadline_ts,
+                    "terminal_eval_required": stage_b_contract.require_terminal_full_real_eval,
+                    "terminal_eval_hard_fail": stage_b_contract.hard_fail_on_terminal_eval_failure,
+                    "terminal_eval_error": terminal_eval_error,
+                    "terminal_eval_result": stage_b_terminal_eval_result,
+                },
+            )
+            log_terminal(log_to_terminal, f"[stage-b] runtime state written to {stage_b_state_path}")
 
     if run is not None:
         run.finish()

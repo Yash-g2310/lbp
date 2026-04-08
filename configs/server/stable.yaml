@@ -10,7 +10,7 @@ hardware:
   compile_model: false
   amp: true
   amp_dtype: bfloat16
-  force_fp32_impl: true
+  force_fp32_impl: false
 
 data:
   train_dataset_name: princeton-vl/LayeredDepth-Syn
@@ -20,6 +20,10 @@ data:
   cache_dir: /mnt/home2/home/yash_g/.cache/huggingface/datasets
   staged_root: /mnt/home2/home/yash_g/layered_depth
   require_local_staging: true
+  allow_hf_downloads: false
+  allow_partial_local_shards: false
+  partial_local_shards_min_per_split: 1
+  repair_hf_cache_once: false
   pin_memory: false
   persistent_workers: false
   prefetch_factor: 1
@@ -53,6 +57,12 @@ architecture:
       backbone_model: dinov3_vitb16
       backbone_backend: torch_hub
   max_layer_id: 8
+  adaln_zero:
+    enabled: true
+    layer_embed_dim: 64
+    time_embed_dim: 64
+    condition_dim: 128
+    timestep_default: 1.0
 
 training:
   epochs: 100
@@ -130,12 +140,21 @@ evaluation:
   checkpoint_name: best_checkpoint.pth
   stage_b_gate:
     enabled: true
-    min_pairs_acc: 0.05
+    metric_key: quads_acc
+    min_pairs_acc: 5.0
+    min_metric_total: 1.0
+    max_missing_layer_ratio: 0.1
     require_non_decreasing_pairs_trend: true
     min_points: 2
     trend_eps: 1.0e-8
     report_dir: ./runs/current/reports
     source_report: ./runs/current/reports/final_report.json
+  stage_b_runtime:
+    enabled: true
+    max_epochs: 30
+    max_runtime_hours: 24.0
+    require_terminal_full_real_eval: true
+    hard_fail_on_terminal_eval_failure: true
 
 auth:
   require_wandb_login: true

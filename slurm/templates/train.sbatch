@@ -10,6 +10,9 @@
 
 set -euo pipefail
 
+LBP_JOB_START_TS="${LBP_JOB_START_TS:-$(date +%s)}"
+export LBP_JOB_START_TS
+
 ROOT_DIR="${ROOT_DIR:-$PWD}"
 if [[ ! -f "$ROOT_DIR/cli.py" ]]; then
 	echo "[FAIL] cli.py not found in ROOT_DIR=$ROOT_DIR" >&2
@@ -34,6 +37,7 @@ cd "$ROOT_DIR"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
 echo "[env] Using PYTHON_BIN=$PYTHON_BIN"
+echo "[env] LBP_JOB_START_TS=$LBP_JOB_START_TS"
 "$PYTHON_BIN" - <<'PY'
 import sys
 mods = ("numpy", "torch", "yaml", "wandb")

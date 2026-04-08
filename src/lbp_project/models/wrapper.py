@@ -16,6 +16,7 @@ from .backbone_policy import (
     resolve_backbone_spec,
     should_stop_on_primary_backbone_failure,
 )
+from .conditioning import SinusoidalTimeEmbedding
 from .unet import STEMEnhancementNet
 
 class DINOSFIN_Architecture_NEW(nn.Module):
@@ -37,6 +38,11 @@ class DINOSFIN_Architecture_NEW(nn.Module):
                  velocity_hidden_channels=64,
                  fft_mode="fp32",
                  fft_pad_size=256,
+                 adaln_zero_enabled=False,
+                 adaln_layer_embed_dim=64,
+                 adaln_time_embed_dim=64,
+                 adaln_condition_dim=128,
+                 adaln_timestep_default=1.0,
                  use_precomputed_dino=False):
         """
         Args:
@@ -55,8 +61,14 @@ class DINOSFIN_Architecture_NEW(nn.Module):
         self.backbone_backend = str(backbone_backend)
         self.max_layer_id = int(max_layer_id)
         self.enable_velocity_head = bool(enable_velocity_head)
+        self.adaln_zero_enabled = bool(adaln_zero_enabled)
+        self.adaln_timestep_default = float(adaln_timestep_default)
         if self.max_layer_id < 1:
             raise ValueError(f"max_layer_id must be >= 1, got {self.max_layer_id}")
+        if self.adaln_timestep_default < 0.0 or self.adaln_timestep_default > 1.0:
+            raise ValueError(
+                f"adaln_timestep_default must be in [0,1], got {self.adaln_timestep_default}"
+            )
 
         arch_cfg = {
             "backbone_repo": self.backbone_repo,
@@ -121,6 +133,31 @@ class DINOSFIN_Architecture_NEW(nn.Module):
         # We keep a scalar prompt map but learn it from categorical layer IDs.
         self.layer_embed = nn.Embedding(self.max_layer_id + 1, 1)
         nn.init.zeros_(self.layer_embed.weight)
+
+        self.adaln_layer_embed: nn.Embedding | None = None
+        self.adaln_time_embed: SinusoidalTimeEmbedding | None = None
+        self.adaln_condition_proj: nn.Module | None = None
+        self.adaln_condition_dim = int(adaln_condition_dim)
+        if self.adaln_zero_enabled:
+            layer_dim = int(adaln_layer_embed_dim)
+            time_dim = int(adaln_time_embed_dim)
+            if layer_dim < 1:
+                raise ValueError(f"adaln_layer_embed_dim must be >= 1, got {layer_dim}")
+            if time_dim < 1:
+                raise ValueError(f"adaln_time_embed_dim must be >= 1, got {time_dim}")
+            if self.adaln_condition_dim < 1:
+                raise ValueError(
+                    f"adaln_condition_dim must be >= 1, got {self.adaln_condition_dim}"
+                )
+
+            self.adaln_layer_embed = nn.Embedding(self.max_layer_id + 1, layer_dim)
+            nn.init.normal_(self.adaln_layer_embed.weight, mean=0.0, std=0.02)
+            self.adaln_time_embed = SinusoidalTimeEmbedding(embed_dim=time_dim)
+            self.adaln_condition_proj = nn.Sequential(
+                nn.Linear(layer_dim + time_dim, self.adaln_condition_dim),
+                nn.SiLU(),
+                nn.Linear(self.adaln_condition_dim, self.adaln_condition_dim),
+            )
         
         # 4. Initialize the Dynamic Decoder
         self.decoder = STEMEnhancementNet(
@@ -132,6 +169,8 @@ class DINOSFIN_Architecture_NEW(nn.Module):
             window_size=window_size,
             fft_mode=fft_mode,
             fft_pad_size=fft_pad_size,
+            adaln_zero_enabled=self.adaln_zero_enabled,
+            adaln_condition_dim=self.adaln_condition_dim,
         )
 
         self.velocity_head: nn.Module | None = None
@@ -240,6 +279,39 @@ class DINOSFIN_Architecture_NEW(nn.Module):
             raise ValueError("flow_t must be in [0, 1]")
         return t
 
+    def _resolve_adaln_condition(
+        self,
+        layer_ids: torch.Tensor,
+        flow_t,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor | None:
+        if not self.adaln_zero_enabled:
+            return None
+        if self.adaln_layer_embed is None or self.adaln_time_embed is None or self.adaln_condition_proj is None:
+            raise RuntimeError("AdaLN-Zero is enabled but conditioning modules are missing")
+
+        if flow_t is None:
+            t_vec = torch.full(
+                (batch_size,),
+                fill_value=self.adaln_timestep_default,
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            t_vec = self._normalize_flow_timestep(
+                flow_t,
+                batch_size=batch_size,
+                device=device,
+                dtype=dtype,
+            )
+
+        layer_vec = self.adaln_layer_embed(layer_ids)
+        time_vec = self.adaln_time_embed(t_vec)
+        cond = self.adaln_condition_proj(torch.cat([layer_vec, time_vec.to(layer_vec.dtype)], dim=1))
+        return cond.to(dtype=dtype)
+
     def forward(
         self,
         x,
@@ -273,6 +345,13 @@ class DINOSFIN_Architecture_NEW(nn.Module):
         
         # 3. Early Fusion Concatenation
         fused_input = torch.cat([x, dino_upsampled, p_vec], dim=1) 
+        adaln_condition = self._resolve_adaln_condition(
+            layer_ids,
+            flow_t=flow_t,
+            batch_size=B,
+            device=x.device,
+            dtype=fused_input.dtype,
+        )
 
         if return_velocity and (not self.enable_velocity_head or self.velocity_head is None):
             raise RuntimeError(
@@ -284,7 +363,12 @@ class DINOSFIN_Architecture_NEW(nn.Module):
 
         # 4. Decoder Pass
         if need_intermediate:
-            out_dict = self.decoder(fused_input, return_intermediate=True, use_checkpointing=use_checkpointing)
+            out_dict = self.decoder(
+                fused_input,
+                return_intermediate=True,
+                use_checkpointing=use_checkpointing,
+                conditioning=adaln_condition,
+            )
             if "decoder_features" not in out_dict:
                 raise RuntimeError("Decoder did not return 'decoder_features' required for velocity head")
 
@@ -344,4 +428,11 @@ class DINOSFIN_Architecture_NEW(nn.Module):
             return velocity_pred
 
         # Standard Prediction Routing
-        return F.softplus(self.decoder(fused_input, return_intermediate=False, use_checkpointing=use_checkpointing))
+        return F.softplus(
+            self.decoder(
+                fused_input,
+                return_intermediate=False,
+                use_checkpointing=use_checkpointing,
+                conditioning=adaln_condition,
+            )
+        )

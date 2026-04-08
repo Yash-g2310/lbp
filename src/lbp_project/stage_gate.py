@@ -20,7 +20,7 @@ def evaluate_stage_b_gate(cfg: Dict[str, Any]) -> StageBGateResult:
         cfg,
         gate_key="stage_b_gate",
         default_enabled=False,
-        default_min_pairs_acc=0.05,
+        default_min_pairs_acc=5.0,
     )
 
 

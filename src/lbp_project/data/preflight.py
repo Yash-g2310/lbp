@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from lbp_project.data.hf_loading import discover_local_arrow_shards
 from lbp_project.models.backbone_policy import resolve_backbone_spec
 
 
@@ -21,10 +22,39 @@ def build_download_matrix(cfg: Dict[str, Any]) -> Dict[str, List[str]]:
     eval_cfg = cfg.get("evaluation", {})
     auth_cfg = cfg.get("auth", {})
 
-    mandatory = [
-        "{}:{} (train)".format(data_cfg.get("train_dataset_name", "<missing>"), data_cfg.get("train_split", "<missing>")),
-        "{}:{} (val)".format(data_cfg.get("val_dataset_name", "<missing>"), data_cfg.get("val_split", "<missing>")),
-    ]
+    allow_hf_downloads = bool(data_cfg.get("allow_hf_downloads", True))
+    allow_partial_local_shards = bool(data_cfg.get("allow_partial_local_shards", False))
+
+    if allow_partial_local_shards:
+        mandatory = [
+            "local Arrow shards (partial mode): {}:{} (train)".format(
+                data_cfg.get("train_dataset_name", "<missing>"),
+                data_cfg.get("train_split", "<missing>"),
+            ),
+            "local Arrow shards (partial mode): {}:{} (val)".format(
+                data_cfg.get("val_dataset_name", "<missing>"),
+                data_cfg.get("val_split", "<missing>"),
+            ),
+        ]
+        if not allow_hf_downloads:
+            mandatory.append("network dataset downloads are disabled (data.allow_hf_downloads=false)")
+    elif not allow_hf_downloads:
+        mandatory = [
+            "local cached dataset build artifacts: {}:{} (train)".format(
+                data_cfg.get("train_dataset_name", "<missing>"),
+                data_cfg.get("train_split", "<missing>"),
+            ),
+            "local cached dataset build artifacts: {}:{} (val)".format(
+                data_cfg.get("val_dataset_name", "<missing>"),
+                data_cfg.get("val_split", "<missing>"),
+            ),
+            "network dataset downloads are disabled (data.allow_hf_downloads=false)",
+        ]
+    else:
+        mandatory = [
+            "{}:{} (train)".format(data_cfg.get("train_dataset_name", "<missing>"), data_cfg.get("train_split", "<missing>")),
+            "{}:{} (val)".format(data_cfg.get("val_dataset_name", "<missing>"), data_cfg.get("val_split", "<missing>")),
+        ]
 
     if bool(data_cfg.get("use_precomputed_dino", False)):
         mandatory.append(f"precomputed index: {data_cfg.get('precomputed_index_path', '<missing>')}")
@@ -305,6 +335,51 @@ def enforce_startup_preflight(cfg: Dict[str, Any], strict_server_policy: bool = 
             f"Required staged_root does not exist: {staged_root}. "
             "Set data.staged_root to a valid path or disable data.require_local_staging."
         )
+
+    allow_hf_downloads = bool(data_cfg.get("allow_hf_downloads", True))
+    allow_partial_local_shards = bool(data_cfg.get("allow_partial_local_shards", False))
+    partial_min_shards = max(1, int(data_cfg.get("partial_local_shards_min_per_split", 1)))
+
+    if allow_partial_local_shards:
+        train_name = str(data_cfg.get("train_dataset_name", ""))
+        train_split = str(data_cfg.get("train_split", "train"))
+        val_name = str(data_cfg.get("val_dataset_name", ""))
+        val_split = str(data_cfg.get("val_split", "validation"))
+
+        train_shards = discover_local_arrow_shards(cache_dir, train_name, train_split)
+        val_shards = discover_local_arrow_shards(cache_dir, val_name, val_split)
+        warnings.append(
+            "local partial-shard mode: {}:{} observed {} arrow shard(s)".format(
+                train_name,
+                train_split,
+                len(train_shards),
+            )
+        )
+        warnings.append(
+            "local partial-shard mode: {}:{} observed {} arrow shard(s)".format(
+                val_name,
+                val_split,
+                len(val_shards),
+            )
+        )
+
+        for dataset_name, split_name, shard_count in (
+            (train_name, train_split, len(train_shards)),
+            (val_name, val_split, len(val_shards)),
+        ):
+            if shard_count >= partial_min_shards:
+                continue
+            msg = (
+                "Local partial-shard mode requires at least {} local Arrow shard(s) for {}:{}, "
+                "but found {} in cache_dir='{}'"
+            ).format(partial_min_shards, dataset_name, split_name, shard_count, cache_dir)
+            if allow_hf_downloads:
+                warnings.append(msg + "; remote fallback remains enabled")
+            else:
+                raise FileNotFoundError(msg + " and data.allow_hf_downloads=false")
+
+    if strict_server_policy and allow_partial_local_shards:
+        raise RuntimeError("Server preflight policy requires data.allow_partial_local_shards=false")
 
     if strict_server_policy and not bool(data_cfg.get("use_precomputed_dino", False)):
         raise RuntimeError("Server preflight policy requires data.use_precomputed_dino=true")

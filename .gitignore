@@ -75,5 +75,3 @@ context/**/*.log
 
 # Intentionally tracked by policy: configs/local/*.yaml
 
-# Reference-only source tree for this phase; keep already tracked files unchanged.
-src/pi-haf/

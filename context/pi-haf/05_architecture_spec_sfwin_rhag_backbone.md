@@ -25,9 +25,10 @@ Fallback policy:
 
 - Primary gate: verify DINOv3 ConvNeXt-Small distilled weights are accessible before launch.
 - If primary is unavailable: stop and ask user interactively for next action (path fix, fallback approval, or defer run).
-- First fallback: DINOv3 ViT-S16+ distilled (user-approved only).
+- First fallback candidate: DINOv3 ViT-B16 distilled (`dinov3_vitb16`) for server-class capacity.
 - If fallback is also unavailable: stop and ask user interactively; do not continue with silent fallback.
 - Temporary DINOv2 fallback remains disabled by default and requires explicit one-off approval.
+ - Default runtime policy remains hard-stop/no-silent-fallback (`backbone_stop_on_failure=true`, `backbone_fallback_approved=false`) unless explicitly overridden.
 
 Wiring note:
 
@@ -68,7 +69,7 @@ Required matrix in implementation verification:
 2. Invalid or out-of-range layer IDs must trigger clear runtime behavior.
 3. Local eval uses per-image required-layer expansion with deduped layer inference per tuple requirements.
 
-## AdaLN-Zero Contract (Approved Target, Full Scope)
+## AdaLN-Zero Contract (Implemented, Full Scope)
 
 1. Conditioning input for normalization blocks includes:
 - layer index embedding,
@@ -81,7 +82,7 @@ Required matrix in implementation verification:
 - zero-initialized modulation path to preserve stable identity behavior at startup.
 
 4. Implementation status:
-- current runtime is not yet full AdaLN-Zero in decoder blocks; migration work is required.
+- active `lbp_project` runtime implements full AdaLN-Zero conditioning in decoder residual flow with zero-initialized modulation path.
 
 ## Dimensional Bridge and Window Safety
 

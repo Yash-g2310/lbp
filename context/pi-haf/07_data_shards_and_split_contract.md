@@ -1,6 +1,6 @@
 # Data Shards and Split Contract
 
-Last reviewed: 2026-04-07
+Last reviewed: 2026-04-08
 Scope: Canonical split definitions and runtime materialization rules for local and server stages.
 
 ## Canonical Dataset Definitions (Do Not Change)
@@ -29,6 +29,9 @@ These definitions are authoritative regardless of local cache/shard reindex stat
 - observed sample counts per split
 - shard presence summary
 - schema key checks
+4. Local loader policy:
+- load from available local Arrow shards when partial mode is enabled,
+- do not trigger remote dataset shard downloads in local Stage A paths.
 
 ## Stage B Server Contract
 
@@ -38,6 +41,9 @@ These definitions are authoritative regardless of local cache/shard reindex stat
 - missing split
 - missing required keys
 - index sample-ID misses
+4. Server loader policy:
+- partial-shard mode is disabled,
+- full split materialization is required under server cache/staging roots.
 
 ## Required Schema Keys
 

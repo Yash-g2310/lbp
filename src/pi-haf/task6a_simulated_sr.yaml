@@ -1,0 +1,88 @@
+# Task 6 - Super-Resolution with Diffusion Configuration
+
+dataset:
+  name: "task6_dataset"
+  split:
+    train: 0.7
+    val: 0.15
+    test: 0.15
+  upscale_factor: 2
+
+model:
+  architecture: "pi_haf"  # pi_haf | diffusion_unet | unet
+  in_channels: 1
+  lr_channels: 1
+  out_channels: 1
+  input_size: [75, 75]
+
+  hidden_channels: 96
+  output_head_channels: 64
+
+  time_embed_dim: 256
+  time_mlp_dim: 256
+
+  num_encoder_stages: 2
+  num_bottleneck_sfin_blocks: 1
+  num_bottleneck_rhag_blocks: 2
+  num_decoder_stages: 2
+
+  sfin_ffn_expansion: 2.0
+  rhag_mlp_ratio: 2.0
+  num_heads: 4
+  window_size: 4
+  dropout: 0.0
+
+  cross_attention_stages: [1, 2, 3]
+  pad_mode: "reflect"
+  strict_76_mode: true
+
+  use_gradient_checkpointing: true
+  checkpoint_cross_attention: true
+
+training:
+  batch_size: 48
+  num_workers: 4
+  pin_memory: true
+  num_epochs: 20
+  learning_rate: 2e-4
+  adamw_eps: 1e-6
+  weight_decay: 1e-5
+  warmup_epochs: 2
+  optimizer: "adamw"
+  scheduler: "cosine"
+  gradient_clip: 1.0
+
+augmentation:
+  enabled: true
+  random_flip: true
+  random_rotation: 90
+  random_crop: true
+
+validation:
+  eval_frequency: 5
+  save_best_only: true
+  metrics: ["psnr", "ssim"]
+
+losses:
+  flow_weight: 1.0
+  mass_weight: 0.2
+  freq_weight: 0.5
+  mass_ramp_epochs: 2
+  freq_ramp_epochs: 2
+  reduction: "mean"
+  freq_exponent: 2.0
+
+vram:
+  enable_mixed_precision: true
+  amp_dtype: "bfloat16"
+  gradient_accumulation_steps: 2
+  gradient_clip_norm: 1.0
+  checkpoint_blocks: true
+
+sampler:
+  num_steps: 50
+  method: "euler"
+  guidance_scale: 0.0
+
+device: "cuda"
+seed: 42

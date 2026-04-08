@@ -41,7 +41,7 @@ Keep fixed across ablations when possible:
 If required after baseline:
 
 1. ConvNeXt-Small distilled (primary baseline).
-2. ViT-S16+ distilled (fallback baseline).
+2. ViT-B16 distilled (`dinov3_vitb16`) as server-class fallback baseline candidate.
 
 Only run backbone ablation when baseline pipeline is stable and reproducible.
 

@@ -5,10 +5,12 @@ Constructs the SFIN-U-Net using dynamic parameters for local/server scaling.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 # Import the foundational blocks we built in components.py
 from .components import SFINBlock, RHAG, AttentionGate
+from .conditioning import AdaLNZero2d
 
 class STEMEnhancementNet(nn.Module):
     def __init__(
@@ -21,6 +23,8 @@ class STEMEnhancementNet(nn.Module):
         window_size=7,
         fft_mode="fp32",
         fft_pad_size=256,
+        adaln_zero_enabled=False,
+        adaln_condition_dim=128,
     ):
         """
         Args:
@@ -33,6 +37,7 @@ class STEMEnhancementNet(nn.Module):
         """
         super().__init__()
         self.window_size = window_size
+        self.adaln_zero_enabled = bool(adaln_zero_enabled)
         
         # Dynamic channel scaling based on the injected base_channels
         self.channels = [base_channels, base_channels * 2, base_channels * 4, base_channels * 8]
@@ -76,8 +81,42 @@ class STEMEnhancementNet(nn.Module):
         self.output_conv = nn.Conv2d(self.channels[0], out_channels, 3, 1, 1)
         self.bottleneck_proj = nn.Conv2d(self.channels[3], out_channels, 1, 1, 0)
         self.decoder_proj = nn.Conv2d(self.channels[0], out_channels, 1, 1, 0)
+
+        self.adaln_blocks = None
+        if self.adaln_zero_enabled:
+            cond_dim = int(adaln_condition_dim)
+            if cond_dim < 1:
+                raise ValueError(f"adaln_condition_dim must be >= 1, got {cond_dim}")
+            self.adaln_blocks = nn.ModuleDict(
+                {
+                    "input": AdaLNZero2d(self.channels[0], cond_dim),
+                    "enc1": AdaLNZero2d(self.channels[0], cond_dim),
+                    "enc2": AdaLNZero2d(self.channels[1], cond_dim),
+                    "enc3": AdaLNZero2d(self.channels[2], cond_dim),
+                    "enc4": AdaLNZero2d(self.channels[3], cond_dim),
+                    "bottleneck": AdaLNZero2d(self.channels[3], cond_dim),
+                    "dec1": AdaLNZero2d(self.channels[3], cond_dim),
+                    "dec2": AdaLNZero2d(self.channels[2], cond_dim),
+                    "dec3": AdaLNZero2d(self.channels[1], cond_dim),
+                    "dec4": AdaLNZero2d(self.channels[0], cond_dim),
+                }
+            )
+
+    def _apply_adaln(self, key, x, conditioning):
+        if not self.adaln_zero_enabled:
+            return x
+        if self.adaln_blocks is None:
+            raise RuntimeError("Internal error: AdaLN-Zero enabled but blocks are missing")
+        if conditioning is None:
+            raise ValueError("conditioning tensor is required when adaln_zero_enabled=true")
+        return self.adaln_blocks[key](x, conditioning)
+
+    def _align_to(self, src, ref):
+        if src.shape[-2:] == ref.shape[-2:]:
+            return src
+        return F.interpolate(src, size=ref.shape[-2:], mode="bilinear", align_corners=False)
         
-    def forward(self, x, return_intermediate=False, use_checkpointing=False):
+    def forward(self, x, return_intermediate=False, use_checkpointing=False, conditioning=None):
         """
         use_checkpointing: Set to True to save VRAM at the cost of ~20% slower compute.
         """
@@ -86,39 +125,50 @@ class STEMEnhancementNet(nn.Module):
             return block(*inputs)
 
         x = self.input_conv(x)
-        if x.shape[-2] % self.window_size != 0 or x.shape[-1] % self.window_size != 0:
-            raise ValueError(
-                f"Input spatial size ({x.shape[-2]}x{x.shape[-1]}) must be divisible by window_size={self.window_size}."
-            )
+        x = self._apply_adaln("input", x, conditioning)
         
         # Encoder Pass (With Optional Checkpointing for Heavy SFIN Blocks)
         if use_checkpointing:
             enc1 = checkpoint(run_block, self.encoder1, x, use_reentrant=False)
+            enc1 = self._apply_adaln("enc1", enc1, conditioning)
             enc2 = checkpoint(run_block, self.encoder2, self.down1(enc1), use_reentrant=False)
+            enc2 = self._apply_adaln("enc2", enc2, conditioning)
             enc3 = checkpoint(run_block, self.encoder3, self.down2(enc2), use_reentrant=False)
+            enc3 = self._apply_adaln("enc3", enc3, conditioning)
             enc4 = checkpoint(run_block, self.encoder4, self.down3(enc3), use_reentrant=False)
+            enc4 = self._apply_adaln("enc4", enc4, conditioning)
             
             bottleneck_feat = checkpoint(run_block, self.bottleneck, self.down4(enc4), use_reentrant=False)
+            bottleneck_feat = self._apply_adaln("bottleneck", bottleneck_feat, conditioning)
         else:
             enc1 = self.encoder1(x)
+            enc1 = self._apply_adaln("enc1", enc1, conditioning)
             enc2 = self.encoder2(self.down1(enc1))
+            enc2 = self._apply_adaln("enc2", enc2, conditioning)
             enc3 = self.encoder3(self.down2(enc2))
+            enc3 = self._apply_adaln("enc3", enc3, conditioning)
             enc4 = self.encoder4(self.down3(enc3))
+            enc4 = self._apply_adaln("enc4", enc4, conditioning)
             
             bottleneck_feat = self.bottleneck(self.down4(enc4))
+            bottleneck_feat = self._apply_adaln("bottleneck", bottleneck_feat, conditioning)
             
         # Decoder Pass
-        up1_feat = self.up1(bottleneck_feat)
+        up1_feat = self._align_to(self.up1(bottleneck_feat), enc4)
         x = self.decoder1(torch.cat([up1_feat, self.ag1(up1_feat, enc4)], dim=1))
+        x = self._apply_adaln("dec1", x, conditioning)
         
-        up2_feat = self.up2(x)
+        up2_feat = self._align_to(self.up2(x), enc3)
         x = self.decoder2(torch.cat([up2_feat, self.ag2(up2_feat, enc3)], dim=1))
+        x = self._apply_adaln("dec2", x, conditioning)
         
-        up3_feat = self.up3(x)
+        up3_feat = self._align_to(self.up3(x), enc2)
         x = self.decoder3(torch.cat([up3_feat, self.ag3(up3_feat, enc2)], dim=1))
+        x = self._apply_adaln("dec3", x, conditioning)
         
-        up4_feat = self.up4(x)
+        up4_feat = self._align_to(self.up4(x), enc1)
         decoder_feat = self.decoder4(torch.cat([up4_feat, self.ag4(up4_feat, enc1)], dim=1))
+        decoder_feat = self._apply_adaln("dec4", decoder_feat, conditioning)
         
         output = self.output_conv(decoder_feat)
         

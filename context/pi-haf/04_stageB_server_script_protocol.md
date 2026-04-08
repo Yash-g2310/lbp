@@ -14,7 +14,7 @@ Execute full-data run with reproducibility, strict preflight, and stable reporti
 2. Slurm train template now dispatches through Stage B workflow command.
 3. Stage-policy runtime config generation and run-manifest emission are now part of `scripts/training/train_eval.py`.
 
-## Target Runtime Contract (Locked)
+## Implemented Runtime Contract (Locked)
 
 1. Stage B epoch policy:
 - 25 epochs preferred.
@@ -25,7 +25,11 @@ Execute full-data run with reproducibility, strict preflight, and stable reporti
 
 3. Evaluation policy:
 - Run periodic evaluation every 10 epochs.
-- Always run final full real benchmark evaluation at stop (1200-image test contract).
+- Always run final full real benchmark evaluation at stop with:
+	- splits: `validation,test`
+	- layer keys: `layer_all,layer_first`
+	- full sample counts (`max_samples=0`).
+- If terminal full real evaluation fails, hard-fail the run (non-zero exit).
 
 ## Entry Preconditions
 
@@ -48,6 +52,8 @@ Stage B is allowed only if Stage A gate is passed:
 3. Important:
 - Nominal definitions are fixed dataset facts.
 - Server materialization must be verified independently from local cache state.
+- Server profiles must run with full-cache, non-partial loading (`data.allow_partial_local_shards=false`).
+- Server runs should use existing complete staged/cache assets rather than local-debug subset behavior.
 
 ## Hardware-Aware Server Guidance (48GB Class, Range-Based)
 
@@ -90,6 +96,10 @@ Stage B is allowed only if Stage A gate is passed:
 - gradient/optimizer health
 - memory/runtime counters
 - preflight hardware diagnostics (requested profile class, detected VRAM, pass/fail status)
+4. Stage B runtime state artifact must be emitted at stop:
+- `runs/current/reports/stage_b_runtime_state.json`
+- includes stop reason, cap source, epoch/step context, and terminal eval result/error.
+5. Stage B wall-clock cap source is job-start timestamp from server launch (`LBP_JOB_START_TS`), with deterministic process-start fallback for non-slurm paths.
 
 ## Abort and Recovery Rules
 
@@ -100,6 +110,7 @@ Abort conditions:
 3. Backbone access failure without approved fallback.
 4. Hardware profile VRAM check failure.
 5. Runtime wall-clock limit reached under dual-cap contract.
+6. Mandatory terminal full real evaluation fails under strict hard-fail policy.
 
 Recovery requirements:
 

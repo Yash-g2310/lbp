@@ -23,6 +23,11 @@ def compute_stage_boundaries(total_epochs: int, stage_a_fraction: float, stage_b
         raise ValueError("stage_b_fraction must be >= stage_a_fraction")
 
     stage_a_end = max(1, int(total_epochs * stage_a_fraction))
+    # For short schedules (e.g., Stage-A 5 epochs), keep at least two epochs in stage-1
+    # so wavelet/ordinal terms do not activate immediately.
+    if total_epochs >= 5 and stage_a_end < 2:
+        stage_a_end = 2
+    stage_a_end = min(stage_a_end, max(1, total_epochs - 1))
     stage_b_end = max(stage_a_end + 1, int(total_epochs * stage_b_fraction))
     return StageBoundaries(stage_a_end_epoch=stage_a_end, stage_b_end_epoch=stage_b_end)
 

@@ -16,6 +16,10 @@ data:
   cache_dir: /home/yash_gupta/.cache/huggingface/datasets
   staged_root: /home/yash_gupta/.cache/huggingface/datasets
   require_local_staging: false
+  allow_hf_downloads: false
+  allow_partial_local_shards: true
+  partial_local_shards_min_per_split: 1
+  repair_hf_cache_once: false
   pin_memory: true
   persistent_workers: false
   batch_size: 2
@@ -47,12 +51,21 @@ architecture:
       backbone_model: dinov3_vitb16
       backbone_backend: torch_hub
   max_layer_id: 8
+  adaln_zero:
+    enabled: true
+    layer_embed_dim: 64
+    time_embed_dim: 64
+    condition_dim: 128
+    timestep_default: 1.0
 
 training:
   epochs: 20
   accum_steps: 8
   dynamic_layers_enabled: true
   strict_empty_target: false
+  auto_disable_amp_on_nonfinite: true
+  skip_nonfinite_grad_step: true
+  max_consecutive_nonfinite_steps: 4
   learning_rate: 1.0e-4
   weight_decay: 1.0e-2
   grad_clip_norm: 1.0
@@ -117,7 +130,10 @@ evaluation:
   checkpoint_name: best_checkpoint.pth
   stage_a_gate:
     enabled: true
-    min_pairs_acc: 0.05
+    metric_key: quads_acc
+    min_pairs_acc: 5.0
+    min_metric_total: 1.0
+    max_missing_layer_ratio: 0.1
     require_non_decreasing_pairs_trend: true
     min_points: 2
     trend_eps: 1.0e-8

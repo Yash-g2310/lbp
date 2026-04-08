@@ -19,6 +19,10 @@ data:
   fallback_cache_dir: ./runs/current/quickcheck/hf_cache
   staged_root: /mnt/home2/home/yash_g/layered_depth
   require_local_staging: true
+  allow_hf_downloads: false
+  allow_partial_local_shards: false
+  partial_local_shards_min_per_split: 1
+  repair_hf_cache_once: false
   pin_memory: true
   persistent_workers: false
   batch_size: 2

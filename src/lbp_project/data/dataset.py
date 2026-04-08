@@ -8,9 +8,10 @@ import re
 from typing import Any, Dict, Optional
 
 import torch
-from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
 import torchvision.transforms as transforms
+
+from lbp_project.data.hf_loading import load_dataset_split_with_policy
 
 # ==========================================
 # 1. TRANSFORMS
@@ -367,17 +368,35 @@ def get_dataloaders(cfg: Dict[str, Any]) -> tuple[DataLoader, DataLoader]:
             max_cached_shards=max_cached_shards,
         )
 
-    train_hf = load_dataset(
-        data_cfg["train_dataset_name"],
-        split=data_cfg["train_split"],
-        cache_dir=str(cache_dir),
-        streaming=False,
+    allow_hf_downloads = bool(data_cfg.get("allow_hf_downloads", True))
+    allow_partial_local_shards = bool(data_cfg.get("allow_partial_local_shards", False))
+    partial_local_min_shards = int(data_cfg.get("partial_local_shards_min_per_split", 1))
+    enable_cache_repair = bool(
+        data_cfg.get(
+            "repair_hf_cache_once",
+            allow_hf_downloads and not allow_partial_local_shards,
+        )
     )
-    val_hf = load_dataset(
+
+    train_hf = load_dataset_split_with_policy(
+        data_cfg["train_dataset_name"],
+        data_cfg["train_split"],
+        cache_dir,
+        allow_downloads=allow_hf_downloads,
+        allow_cache_repair=enable_cache_repair,
+        allow_partial_local_shards=allow_partial_local_shards,
+        partial_local_min_shards=partial_local_min_shards,
+        log_prefix="[dataset]",
+    )
+    val_hf = load_dataset_split_with_policy(
         data_cfg["val_dataset_name"],
-        split=data_cfg["val_split"],
-        cache_dir=str(cache_dir),
-        streaming=False,
+        data_cfg["val_split"],
+        cache_dir,
+        allow_downloads=allow_hf_downloads,
+        allow_cache_repair=enable_cache_repair,
+        allow_partial_local_shards=allow_partial_local_shards,
+        partial_local_min_shards=partial_local_min_shards,
+        log_prefix="[dataset]",
     )
 
     default_depth_scale, default_depth_clip_min, default_depth_clip_max = _infer_depth_defaults(data_cfg)

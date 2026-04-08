@@ -5,13 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Dict
 import sys
 
 import torch
-from datasets import load_dataset
 import torchvision.transforms as transforms
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -21,9 +19,11 @@ if str(SRC_ROOT) not in sys.path:
 
 from lbp_project.config.io import load_yaml
 from lbp_project.data.dataset import PrecomputedFeatureStore, _extract_sample_id
+from lbp_project.data.hf_loading import load_dataset_split_with_policy
 from lbp_project.models.factory import build_depth_model
 from lbp_project.utils.checkpoints import load_checkpoint_model
-from lbp_project.utils.eval_layers import predict_depth_by_layer, resolve_required_layers
+from lbp_project.utils.eval_inference import predict_depth_for_eval, resolve_flow_eval_settings
+from lbp_project.utils.eval_layers import resolve_required_layers
 from lbp_project.utils.metrics import (
     evaluate_tuple_sample,
     evaluate_tuple_sample_multi_layer,
@@ -77,6 +77,7 @@ def main() -> None:
     cfg = load_yaml(args.config)
     eval_cfg = cfg.get("evaluation", {})
     data_cfg = cfg.get("data", {})
+    flow_eval = resolve_flow_eval_settings(cfg)
 
     if args.splits:
         splits = [s.strip() for s in args.splits.split(",") if s.strip()]
@@ -101,6 +102,15 @@ def main() -> None:
     multi_pass_eval = bool(eval_cfg.get("multi_pass_real_eval", True)) and not args.disable_multi_pass
     max_samples = args.max_samples if args.max_samples > 0 else int(eval_cfg.get("real_max_samples", 0))
     dataset_name = str(eval_cfg.get("real_dataset_name", "princeton-vl/LayeredDepth"))
+    allow_hf_downloads = bool(data_cfg.get("allow_hf_downloads", True))
+    allow_partial_local_shards = bool(data_cfg.get("allow_partial_local_shards", False))
+    partial_local_min_shards = int(data_cfg.get("partial_local_shards_min_per_split", 1))
+    repair_hf_cache_once = bool(
+        data_cfg.get(
+            "repair_hf_cache_once",
+            allow_hf_downloads and not allow_partial_local_shards,
+        )
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() and cfg["hardware"]["device"] == "cuda" else "cpu")
     amp_enabled = bool(cfg["hardware"].get("amp", True)) and device.type == "cuda"
@@ -122,7 +132,12 @@ def main() -> None:
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    model = build_depth_model(cfg, device, use_precomputed_dino=use_precomputed_dino)
+    model_cfg = dict(cfg)
+    model_cfg["architecture"] = dict(cfg.get("architecture", {}))
+    if bool(flow_eval["flow_mode"]):
+        model_cfg["architecture"]["enable_velocity_head"] = True
+
+    model = build_depth_model(model_cfg, device, use_precomputed_dino=use_precomputed_dino)
     missing, unexpected = load_checkpoint_model(
         model,
         checkpoint_path,
@@ -151,7 +166,16 @@ def main() -> None:
     }
 
     for split in splits:
-        ds = load_dataset(dataset_name, split=split, cache_dir=cfg["data"]["cache_dir"], streaming=False)
+        ds = load_dataset_split_with_policy(
+            dataset_name,
+            split,
+            cache_dir=str(cfg["data"]["cache_dir"]),
+            allow_downloads=allow_hf_downloads,
+            allow_cache_repair=repair_hf_cache_once,
+            allow_partial_local_shards=allow_partial_local_shards,
+            partial_local_min_shards=partial_local_min_shards,
+            log_prefix="[eval-tuples][dataset]",
+        )
         for layer_key in layer_keys:
             totals: Dict[str, Dict[str, int]] = {
                 "pairs": {"correct": 0, "total": 0},
@@ -174,6 +198,8 @@ def main() -> None:
 
                     precomputed = None
                     if use_precomputed_dino:
+                        if feature_store is None:
+                            raise RuntimeError("Precomputed feature store was not initialized")
                         sample_id = _extract_sample_id(sample, i)
                         precomputed = feature_store.get(split, sample_id).unsqueeze(0).to(device)
 
@@ -181,20 +207,29 @@ def main() -> None:
                         required_layers = resolve_required_layers(
                             sample,
                             layer_key=layer_key,
-                            target_layer_override=target_layer if args.target_layer > 0 else None,
+                            target_layer_override=None,
                         )
                         if not required_layers:
                             processed += 1
                             continue
 
-                        pred_by_layer = predict_depth_by_layer(
-                            model,
-                            img,
-                            required_layers,
-                            amp_enabled=amp_enabled,
-                            device=device,
-                            precomputed_dino=precomputed,
-                        )
+                        pred_by_layer: Dict[int, torch.Tensor] = {}
+                        for layer_id in required_layers:
+                            pred_by_layer[int(layer_id)] = predict_depth_for_eval(
+                                model,
+                                img,
+                                target_layer=int(layer_id),
+                                precomputed_dino=precomputed,
+                                device=device,
+                                amp_enabled=amp_enabled,
+                                use_flow_inference=bool(flow_eval["use_flow_inference"]),
+                                flow_steps=int(flow_eval["flow_steps"]),
+                                flow_t_low=float(flow_eval["flow_t_low"]),
+                                flow_t_high=float(flow_eval["flow_t_high"]),
+                                flow_init=str(flow_eval["flow_init"]),
+                                depth_clip_min=float(flow_eval["depth_clip_min"]),
+                                depth_clip_max=float(flow_eval["depth_clip_max"]),
+                            )
 
                         counts = evaluate_tuple_sample_multi_layer(
                             pred_by_layer,
@@ -206,18 +241,21 @@ def main() -> None:
                             counts.get("missing_layer_tuples", {}).get("total", 0)
                         )
                     else:
-                        amp_ctx = (
-                            torch.autocast(device_type="cuda", enabled=amp_enabled)
-                            if device.type == "cuda"
-                            else nullcontext()
+                        pred = predict_depth_for_eval(
+                            model,
+                            img,
+                            target_layer=target_layer,
+                            precomputed_dino=precomputed,
+                            device=device,
+                            amp_enabled=amp_enabled,
+                            use_flow_inference=bool(flow_eval["use_flow_inference"]),
+                            flow_steps=int(flow_eval["flow_steps"]),
+                            flow_t_low=float(flow_eval["flow_t_low"]),
+                            flow_t_high=float(flow_eval["flow_t_high"]),
+                            flow_init=str(flow_eval["flow_init"]),
+                            depth_clip_min=float(flow_eval["depth_clip_min"]),
+                            depth_clip_max=float(flow_eval["depth_clip_max"]),
                         )
-                        with amp_ctx:
-                            pred = model(
-                                img,
-                                target_layer=target_layer,
-                                return_intermediate=False,
-                                precomputed_dino=precomputed,
-                            )
                         counts = evaluate_tuple_sample(pred, sample, original_size=original_size, layer_key=layer_key)
 
                     merge_tuple_counts(totals, counts)
@@ -258,6 +296,10 @@ def main() -> None:
         "layer_keys": layer_keys,
         "target_layer": target_layer,
         "multi_pass_real_eval": multi_pass_eval,
+        "flow_mode": bool(flow_eval["flow_mode"]),
+        "flow_inference_enabled": bool(flow_eval["use_flow_inference"]),
+        "flow_inference_steps": int(flow_eval["flow_steps"]),
+        "flow_inference_init": str(flow_eval["flow_init"]),
         "use_precomputed_dino": use_precomputed_dino,
         "per_eval": per_eval,
         "aggregate": aggregate_summary,

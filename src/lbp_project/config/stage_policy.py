@@ -102,6 +102,14 @@ def apply_stage_policy(
 
         # Stage-A runtime contract is fixed to exactly 5 epochs.
         _set(runtime_cfg, "training.epochs", 5, result.changes)
+        _set(runtime_cfg, "training.resume.enabled", False, result.changes)
+        _set(runtime_cfg, "training.resume.require_config_sha256_match", True, result.changes)
+        _set(runtime_cfg, "training.resume.fail_on_config_mismatch", True, result.changes)
+        scheduler_cfg = train_cfg.get("scheduler", {}) if isinstance(train_cfg, dict) else {}
+        if isinstance(scheduler_cfg, dict):
+            scheduler_name = str(scheduler_cfg.get("name", "")).strip().lower()
+            if scheduler_name == "cosine":
+                _set(runtime_cfg, "training.scheduler.t_max_epochs", 5, result.changes)
 
         epochs = int(train_cfg.get("epochs", 0))
         _require(
@@ -116,6 +124,8 @@ def apply_stage_policy(
 
         _set(runtime_cfg, "evaluation.periodic_real_eval_every_epochs", 1, result.changes)
         _set(runtime_cfg, "evaluation.run_after_train", True, result.changes)
+        _set(runtime_cfg, "architecture.backbone_stop_on_failure", True, result.changes)
+        _set(runtime_cfg, "architecture.backbone_fallback_approved", False, result.changes)
 
         if "periodic_real_max_samples" not in eval_cfg:
             base_max = int(eval_cfg.get("real_max_samples", 100))
@@ -129,7 +139,9 @@ def apply_stage_policy(
             stage_a_gate_cfg = eval_cfg["stage_a_gate"]
         _set(runtime_cfg, "evaluation.stage_a_gate.enabled", True, result.changes)
         if "min_pairs_acc" not in stage_a_gate_cfg:
-            _set(runtime_cfg, "evaluation.stage_a_gate.min_pairs_acc", 0.05, result.changes)
+            _set(runtime_cfg, "evaluation.stage_a_gate.min_pairs_acc", 5.0, result.changes)
+        if "metric_key" not in stage_a_gate_cfg:
+            _set(runtime_cfg, "evaluation.stage_a_gate.metric_key", "quads_acc", result.changes)
         if "require_non_decreasing_pairs_trend" not in stage_a_gate_cfg:
             _set(
                 runtime_cfg,
@@ -141,6 +153,10 @@ def apply_stage_policy(
             _set(runtime_cfg, "evaluation.stage_a_gate.min_points", 2, result.changes)
         if "trend_eps" not in stage_a_gate_cfg:
             _set(runtime_cfg, "evaluation.stage_a_gate.trend_eps", 1.0e-8, result.changes)
+        if "min_metric_total" not in stage_a_gate_cfg:
+            _set(runtime_cfg, "evaluation.stage_a_gate.min_metric_total", 1.0, result.changes)
+        if "max_missing_layer_ratio" not in stage_a_gate_cfg:
+            _set(runtime_cfg, "evaluation.stage_a_gate.max_missing_layer_ratio", 0.1, result.changes)
         if "report_dir" not in stage_a_gate_cfg:
             _set(
                 runtime_cfg,
@@ -164,7 +180,25 @@ def apply_stage_policy(
             int(stage_b_periodic_eval_every),
             result.changes,
         )
+        _set(runtime_cfg, "training.resume.enabled", True, result.changes)
+        _set(runtime_cfg, "training.resume.require_config_sha256_match", True, result.changes)
+        _set(runtime_cfg, "training.resume.fail_on_config_mismatch", True, result.changes)
         _set(runtime_cfg, "evaluation.run_after_train", True, result.changes)
+        _set(runtime_cfg, "architecture.backbone_stop_on_failure", True, result.changes)
+        _set(runtime_cfg, "architecture.backbone_fallback_approved", False, result.changes)
+        _set(runtime_cfg, "evaluation.real_splits", ["validation", "test"], result.changes)
+        _set(runtime_cfg, "evaluation.real_layer_keys", ["layer_all", "layer_first"], result.changes)
+        _set(runtime_cfg, "evaluation.real_max_samples", 0, result.changes)
+
+        stage_b_runtime_cfg = eval_cfg.get("stage_b_runtime")
+        if not isinstance(stage_b_runtime_cfg, dict):
+            eval_cfg["stage_b_runtime"] = {}
+
+        _set(runtime_cfg, "evaluation.stage_b_runtime.enabled", True, result.changes)
+        _set(runtime_cfg, "evaluation.stage_b_runtime.max_epochs", 30, result.changes)
+        _set(runtime_cfg, "evaluation.stage_b_runtime.max_runtime_hours", 24.0, result.changes)
+        _set(runtime_cfg, "evaluation.stage_b_runtime.require_terminal_full_real_eval", True, result.changes)
+        _set(runtime_cfg, "evaluation.stage_b_runtime.hard_fail_on_terminal_eval_failure", True, result.changes)
 
         # Hard promotion gate defaults: Stage-A tuple evidence must be strong enough.
         gate_cfg = eval_cfg.get("stage_b_gate")
@@ -174,7 +208,9 @@ def apply_stage_policy(
 
         _set(runtime_cfg, "evaluation.stage_b_gate.enabled", True, result.changes)
         if "min_pairs_acc" not in gate_cfg:
-            _set(runtime_cfg, "evaluation.stage_b_gate.min_pairs_acc", 0.05, result.changes)
+            _set(runtime_cfg, "evaluation.stage_b_gate.min_pairs_acc", 5.0, result.changes)
+        if "metric_key" not in gate_cfg:
+            _set(runtime_cfg, "evaluation.stage_b_gate.metric_key", "quads_acc", result.changes)
         if "require_non_decreasing_pairs_trend" not in gate_cfg:
             _set(
                 runtime_cfg,
@@ -186,6 +222,10 @@ def apply_stage_policy(
             _set(runtime_cfg, "evaluation.stage_b_gate.min_points", 2, result.changes)
         if "trend_eps" not in gate_cfg:
             _set(runtime_cfg, "evaluation.stage_b_gate.trend_eps", 1.0e-8, result.changes)
+        if "min_metric_total" not in gate_cfg:
+            _set(runtime_cfg, "evaluation.stage_b_gate.min_metric_total", 1.0, result.changes)
+        if "max_missing_layer_ratio" not in gate_cfg:
+            _set(runtime_cfg, "evaluation.stage_b_gate.max_missing_layer_ratio", 0.1, result.changes)
         if "report_dir" not in gate_cfg:
             _set(
                 runtime_cfg,
@@ -241,12 +281,39 @@ def validate_stage_policy(cfg: Dict[str, Any], stage_mode: str, strict: bool = F
             strict,
             warnings,
         )
+        arch_cfg = cfg.get("architecture", {})
+        _require(
+            bool(arch_cfg.get("backbone_stop_on_failure", True)),
+            "Stage A policy expects architecture.backbone_stop_on_failure=true",
+            strict,
+            warnings,
+        )
+        _require(
+            not bool(arch_cfg.get("backbone_fallback_approved", False)),
+            "Stage A policy expects architecture.backbone_fallback_approved=false",
+            strict,
+            warnings,
+        )
+        resume_cfg = train_cfg.get("resume", {})
+        resume_enabled = bool(resume_cfg.get("enabled", False)) if isinstance(resume_cfg, dict) else False
+        _require(
+            not resume_enabled,
+            "Stage A policy expects training.resume.enabled=false",
+            strict,
+            warnings,
+        )
 
     elif mode == STAGE_B:
         periodic = int(eval_cfg.get("periodic_real_eval_every_epochs", 0))
         _require(
             periodic == 10,
             "Stage B policy expects evaluation.periodic_real_eval_every_epochs=10",
+            strict,
+            warnings,
+        )
+        _require(
+            bool(eval_cfg.get("run_after_train", False)),
+            "Stage B policy expects evaluation.run_after_train=true",
             strict,
             warnings,
         )
@@ -257,9 +324,93 @@ def validate_stage_policy(cfg: Dict[str, Any], stage_mode: str, strict: bool = F
             strict,
             warnings,
         )
+
+        splits = [str(x).strip().lower() for x in eval_cfg.get("real_splits", [eval_cfg.get("real_split", "")])]
+        _require(
+            "validation" in splits and "test" in splits,
+            "Stage B policy expects evaluation.real_splits to include validation and test",
+            strict,
+            warnings,
+        )
+        layer_keys = [
+            str(x).strip().lower()
+            for x in eval_cfg.get("real_layer_keys", [eval_cfg.get("real_layer_key", "")])
+        ]
+        _require(
+            "layer_all" in layer_keys and "layer_first" in layer_keys,
+            "Stage B policy expects evaluation.real_layer_keys to include layer_all and layer_first",
+            strict,
+            warnings,
+        )
+        _require(
+            int(eval_cfg.get("real_max_samples", -1)) == 0,
+            "Stage B policy expects evaluation.real_max_samples=0 for terminal full evaluation",
+            strict,
+            warnings,
+        )
+
+        runtime_cfg = eval_cfg.get("stage_b_runtime", {})
+        _require(
+            isinstance(runtime_cfg, dict),
+            "Stage B policy expects evaluation.stage_b_runtime to be configured",
+            strict,
+            warnings,
+        )
+        if isinstance(runtime_cfg, dict):
+            _require(
+                bool(runtime_cfg.get("enabled", False)),
+                "Stage B policy expects evaluation.stage_b_runtime.enabled=true",
+                strict,
+                warnings,
+            )
+            _require(
+                int(runtime_cfg.get("max_epochs", 0)) == 30,
+                "Stage B policy expects evaluation.stage_b_runtime.max_epochs=30",
+                strict,
+                warnings,
+            )
+            _require(
+                abs(float(runtime_cfg.get("max_runtime_hours", 0.0)) - 24.0) < 1.0e-9,
+                "Stage B policy expects evaluation.stage_b_runtime.max_runtime_hours=24.0",
+                strict,
+                warnings,
+            )
+            _require(
+                bool(runtime_cfg.get("require_terminal_full_real_eval", False)),
+                "Stage B policy expects evaluation.stage_b_runtime.require_terminal_full_real_eval=true",
+                strict,
+                warnings,
+            )
+            _require(
+                bool(runtime_cfg.get("hard_fail_on_terminal_eval_failure", False)),
+                "Stage B policy expects evaluation.stage_b_runtime.hard_fail_on_terminal_eval_failure=true",
+                strict,
+                warnings,
+            )
         _require(
             bool(data_cfg.get("require_local_staging", False)),
             "Stage B policy expects data.require_local_staging=true",
+            strict,
+            warnings,
+        )
+        arch_cfg = cfg.get("architecture", {})
+        _require(
+            bool(arch_cfg.get("backbone_stop_on_failure", True)),
+            "Stage B policy expects architecture.backbone_stop_on_failure=true",
+            strict,
+            warnings,
+        )
+        _require(
+            not bool(arch_cfg.get("backbone_fallback_approved", False)),
+            "Stage B policy expects architecture.backbone_fallback_approved=false",
+            strict,
+            warnings,
+        )
+        resume_cfg = train_cfg.get("resume", {})
+        resume_enabled = bool(resume_cfg.get("enabled", True)) if isinstance(resume_cfg, dict) else True
+        _require(
+            resume_enabled,
+            "Stage B policy expects training.resume.enabled=true",
             strict,
             warnings,
         )

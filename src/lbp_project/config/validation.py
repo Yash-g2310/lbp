@@ -147,6 +147,28 @@ def validate_config_dict(cfg: Dict[str, Any], source: str | Path | None = None) 
             f"{_path_label(source)}: architecture.backbone_fallback_approved must be a boolean"
         )
 
+    adaln_cfg = cfg["architecture"].get("adaln_zero", {})
+    if adaln_cfg:
+        if not isinstance(adaln_cfg, dict):
+            raise ValueError(f"{_path_label(source)}: architecture.adaln_zero must be a mapping")
+        if "enabled" in adaln_cfg and not isinstance(adaln_cfg.get("enabled"), bool):
+            raise ValueError(f"{_path_label(source)}: architecture.adaln_zero.enabled must be a boolean")
+
+        for key in ("layer_embed_dim", "time_embed_dim", "condition_dim"):
+            if key in adaln_cfg and int(adaln_cfg.get(key, 0)) < 1:
+                raise ValueError(
+                    f"{_path_label(source)}: architecture.adaln_zero.{key} must be >= 1"
+                )
+
+        if "timestep_default" in adaln_cfg:
+            _ensure_range(
+                float(adaln_cfg.get("timestep_default", 1.0)),
+                "architecture.adaln_zero.timestep_default",
+                0.0,
+                1.0,
+                source,
+            )
+
     num_workers = int(cfg["hardware"]["num_workers"])
     if num_workers < 0:
         raise ValueError(f"{_path_label(source)}: hardware.num_workers must be >= 0")
@@ -171,6 +193,34 @@ def validate_config_dict(cfg: Dict[str, Any], source: str | Path | None = None) 
         raise ValueError(
             f"{_path_label(source)}: data.fallback_cache_dir must be a string when provided"
         )
+
+    if "allow_hf_downloads" in cfg["data"] and not isinstance(
+        cfg["data"].get("allow_hf_downloads"), bool
+    ):
+        raise ValueError(
+            f"{_path_label(source)}: data.allow_hf_downloads must be a boolean when provided"
+        )
+
+    if "allow_partial_local_shards" in cfg["data"] and not isinstance(
+        cfg["data"].get("allow_partial_local_shards"), bool
+    ):
+        raise ValueError(
+            f"{_path_label(source)}: data.allow_partial_local_shards must be a boolean when provided"
+        )
+
+    if "repair_hf_cache_once" in cfg["data"] and not isinstance(
+        cfg["data"].get("repair_hf_cache_once"), bool
+    ):
+        raise ValueError(
+            f"{_path_label(source)}: data.repair_hf_cache_once must be a boolean when provided"
+        )
+
+    if "partial_local_shards_min_per_split" in cfg["data"]:
+        min_shards = int(cfg["data"].get("partial_local_shards_min_per_split", 0))
+        if min_shards < 1:
+            raise ValueError(
+                f"{_path_label(source)}: data.partial_local_shards_min_per_split must be >= 1"
+            )
 
     if cfg["data"]["use_precomputed_dino"]:
         idx_path = str(cfg["data"].get("precomputed_index_path", "")).strip()
@@ -201,6 +251,25 @@ def validate_config_dict(cfg: Dict[str, Any], source: str | Path | None = None) 
         min_decay = float(curriculum_cfg.get("min_decay", 0.1))
         _ensure_positive(min_decay, "training.curriculum.min_decay", source)
 
+    resume_cfg = cfg["training"].get("resume", {})
+    if resume_cfg:
+        if not isinstance(resume_cfg, dict):
+            raise ValueError(f"{_path_label(source)}: training.resume must be a mapping when provided")
+        if "enabled" in resume_cfg and not isinstance(resume_cfg.get("enabled"), bool):
+            raise ValueError(f"{_path_label(source)}: training.resume.enabled must be a boolean")
+        if "require_config_sha256_match" in resume_cfg and not isinstance(
+            resume_cfg.get("require_config_sha256_match"), bool
+        ):
+            raise ValueError(
+                f"{_path_label(source)}: training.resume.require_config_sha256_match must be a boolean"
+            )
+        if "fail_on_config_mismatch" in resume_cfg and not isinstance(
+            resume_cfg.get("fail_on_config_mismatch"), bool
+        ):
+            raise ValueError(
+                f"{_path_label(source)}: training.resume.fail_on_config_mismatch must be a boolean"
+            )
+
     staged_cfg = cfg["training"].get("staged_losses", {})
     if staged_cfg.get("enabled", False):
         mode = str(staged_cfg.get("mode", cfg["training"].get("loss_mode", "legacy"))).strip().lower()
@@ -223,6 +292,11 @@ def validate_config_dict(cfg: Dict[str, Any], source: str | Path | None = None) 
             raise ValueError(f"{_path_label(source)}: training.staged_losses.smoothness_weight must be >= 0")
 
         if mode in {"flow", "flow_staged", "rectified_flow"}:
+            if not bool(adaln_cfg.get("enabled", False)):
+                raise ValueError(
+                    f"{_path_label(source)}: flow-staged mode requires architecture.adaln_zero.enabled=true"
+                )
+
             for key in ("flow_weight", "ssi_weight", "wavelet_weight", "ordinal_weight"):
                 if float(staged_cfg.get(key, 0.0)) < 0.0:
                     raise ValueError(
@@ -306,15 +380,105 @@ def validate_config_dict(cfg: Dict[str, Any], source: str | Path | None = None) 
             raise ValueError(f"{_path_label(source)}: evaluation.{gate_key}.min_points must be >= 1")
         if "min_pairs_acc" in stage_gate_cfg:
             _ensure_range(
-                float(stage_gate_cfg.get("min_pairs_acc", 0.05)),
+                float(stage_gate_cfg.get("min_pairs_acc", 5.0)),
                 f"evaluation.{gate_key}.min_pairs_acc",
+                0.0,
+                100.0,
+                source,
+            )
+        if "metric_key" in stage_gate_cfg:
+            metric_key = str(stage_gate_cfg.get("metric_key", "")).strip().lower()
+            allowed_metric_keys = {"pairs_acc", "trips_acc", "quads_acc", "all_acc"}
+            if metric_key not in allowed_metric_keys:
+                raise ValueError(
+                    f"{_path_label(source)}: evaluation.{gate_key}.metric_key must be one of "
+                    f"{sorted(allowed_metric_keys)}, got '{metric_key}'"
+                )
+        if "min_metric_total" in stage_gate_cfg and float(stage_gate_cfg.get("min_metric_total", 0.0)) < 0.0:
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.{gate_key}.min_metric_total must be >= 0"
+            )
+        if "max_missing_layer_tuples" in stage_gate_cfg and float(
+            stage_gate_cfg.get("max_missing_layer_tuples", 0.0)
+        ) < 0.0:
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.{gate_key}.max_missing_layer_tuples must be >= 0"
+            )
+        if "max_missing_layer_ratio" in stage_gate_cfg:
+            _ensure_range(
+                float(stage_gate_cfg.get("max_missing_layer_ratio", 0.0)),
+                f"evaluation.{gate_key}.max_missing_layer_ratio",
                 0.0,
                 1.0,
                 source,
             )
+        if "expected_config_sha256" in stage_gate_cfg and not isinstance(
+            stage_gate_cfg.get("expected_config_sha256"), str
+        ):
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.{gate_key}.expected_config_sha256 must be a string"
+            )
+        if "min_report_timestamp_utc" in stage_gate_cfg and not isinstance(
+            stage_gate_cfg.get("min_report_timestamp_utc"), str
+        ):
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.{gate_key}.min_report_timestamp_utc must be a string"
+            )
+        if "require_config_sha256_match" in stage_gate_cfg and not isinstance(
+            stage_gate_cfg.get("require_config_sha256_match"), bool
+        ):
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.{gate_key}.require_config_sha256_match must be a boolean"
+            )
+        if "require_report_timestamp" in stage_gate_cfg and not isinstance(
+            stage_gate_cfg.get("require_report_timestamp"), bool
+        ):
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.{gate_key}.require_report_timestamp must be a boolean"
+            )
+        if "allow_fallback_report" in stage_gate_cfg and not isinstance(
+            stage_gate_cfg.get("allow_fallback_report"), bool
+        ):
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.{gate_key}.allow_fallback_report must be a boolean"
+            )
         if "report_dir" in stage_gate_cfg and not str(stage_gate_cfg.get("report_dir", "")).strip():
             raise ValueError(
                 f"{_path_label(source)}: evaluation.{gate_key}.report_dir must be non-empty when provided"
+            )
+
+    stage_b_runtime_cfg = cfg.get("evaluation", {}).get("stage_b_runtime", {})
+    if stage_b_runtime_cfg:
+        if not isinstance(stage_b_runtime_cfg, dict):
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.stage_b_runtime must be a mapping when provided"
+            )
+        if "enabled" in stage_b_runtime_cfg and not isinstance(stage_b_runtime_cfg.get("enabled"), bool):
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.stage_b_runtime.enabled must be a boolean"
+            )
+        if "require_terminal_full_real_eval" in stage_b_runtime_cfg and not isinstance(
+            stage_b_runtime_cfg.get("require_terminal_full_real_eval"), bool
+        ):
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.stage_b_runtime.require_terminal_full_real_eval must be a boolean"
+            )
+        if "hard_fail_on_terminal_eval_failure" in stage_b_runtime_cfg and not isinstance(
+            stage_b_runtime_cfg.get("hard_fail_on_terminal_eval_failure"), bool
+        ):
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.stage_b_runtime.hard_fail_on_terminal_eval_failure must be a boolean"
+            )
+
+        if "max_epochs" in stage_b_runtime_cfg and int(stage_b_runtime_cfg.get("max_epochs", 0)) < 1:
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.stage_b_runtime.max_epochs must be >= 1"
+            )
+        if "max_runtime_hours" in stage_b_runtime_cfg and float(
+            stage_b_runtime_cfg.get("max_runtime_hours", 0.0)
+        ) <= 0.0:
+            raise ValueError(
+                f"{_path_label(source)}: evaluation.stage_b_runtime.max_runtime_hours must be > 0"
             )
 
     if "fixture_checkpoint" in cfg.get("evaluation", {}) and not isinstance(

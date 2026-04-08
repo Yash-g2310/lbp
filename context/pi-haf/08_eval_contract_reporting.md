@@ -59,11 +59,16 @@ All of the following are required:
 4. Validation reporting cadence is every 10 epochs during Stage B.
 5. Final-stop full real benchmark evaluation is mandatory at Stage B stop.
 
-## Stage B Stop/Eval Runtime Policy (Approved Target)
+## Stage B Stop/Eval Runtime Policy (Implemented)
 
 1. Stage B uses dual cap: `min(24h, 30 epochs)`.
 2. 25 epochs is preferred when budget and stability permit.
 3. A final full real evaluation (1200-image contract) must run at stop regardless of stop trigger.
+4. Terminal full real evaluation coverage is locked to:
+- splits `validation,test`
+- layer keys `layer_all,layer_first`
+- full samples (`max_samples=0`).
+5. Terminal full real evaluation failure is a hard-fail condition (non-zero exit).
 
 ## Reporting Schema (Minimum)
 

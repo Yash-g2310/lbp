@@ -11,7 +11,7 @@ Scope: Track locked decisions, active risks, and unresolved questions for this p
 4. Local real shards retained and reindexed for local evaluation checks.
 5. Tuple layer coverage policy: auto-expand predictions to all required tuple layer IDs.
 6. Primary backbone: DINOv3 ConvNeXt-Small distilled.
-7. Fallback 1: DINOv3 ViT-S16+ distilled.
+7. Fallback 1 candidate: DINOv3 ViT-B16 distilled (`dinov3_vitb16`) for server-class capacity.
 8. If primary or fallback backbone is unavailable: stop and ask user interactively for next action (no silent fallback).
 9. DINOv2 temporary fallback: disabled by default, explicit one-off approval only.
 10. Wavelet defaults: `sym4` primary, `bior3.5` fallback, level 2 default.
@@ -33,10 +33,12 @@ Scope: Track locked decisions, active risks, and unresolved questions for this p
 26. PI-HAF flow migration target is immediate requirement: inverse-depth normalization to `[-1,1]`.
 27. Empty-space handling target is dataloader-enforced `L1 = L2` contract for opaque/no-front-layer cases.
 28. AdaLN-Zero scope is full conditioning path with `(layer_id, timestep)` through decoder residual blocks.
-29. Precision target is mixed BF16 global + FP32 bubble on wavelet-sensitive blocks (documented as target pending implementation).
-30. Stage B runtime contract target is dual-cap: 25 preferred, up to 30, hard stop at `min(24h, 30 epochs)`.
-31. Final-stop full real evaluation is mandatory at Stage B stop (1200-image benchmark contract).
+29. Precision policy is aligned in active server profiles with mixed-precision runtime defaults; stable profile sets `force_fp32_impl=false`.
+30. Stage B runtime contract is enforced as dual-cap: 25 preferred, up to 30, hard stop at `min(24h, 30 epochs)` with wall-clock measured from server job start.
+31. Final-stop full real evaluation is mandatory at Stage B stop (validation+test, `layer_all`+`layer_first`, full samples).
 32. Depth-space migration is a retraining boundary; no checkpoint compatibility shim.
+33. Stage B terminal full real evaluation failure is a hard-fail condition (non-zero exit).
+34. Data-loading policy is environment-scoped: local uses offline partial-shard mode (existing Arrow shards only), server uses non-partial full-shard mode.
 
 ## Clash Options and Chosen Paths
 
@@ -51,9 +53,9 @@ Scope: Track locked decisions, active risks, and unresolved questions for this p
 - Selected: dataloader-level enforcement (`L1 = L2` for opaque/no-front-layer regions).
 
 3. Conditioning clash:
-- Current: entry-level layer prompt conditioning.
+- Current: full-scope AdaLN-Zero conditioning with `(layer_id, timestep)` propagated through decoder residual path.
 - Options considered: RHAG-only partial AdaLN, stub-first, full scope.
-- Selected: full-scope AdaLN-Zero target.
+- Selected: full-scope AdaLN-Zero, now implemented in active runtime.
 
 4. Precision-policy clash:
 - Current: mixed precision with stability guards, but not full target policy contract.
@@ -61,7 +63,7 @@ Scope: Track locked decisions, active risks, and unresolved questions for this p
 - Selected: mixed BF16 global + FP32 wavelet bubble target.
 
 5. Stage boundary/runtime clash:
-- Current: stage policy and cadence support exists.
+- Current: stage policy, dual-cap runtime stop, and strict terminal full-eval enforcement are active in Stage B path.
 - Options considered: fractional, fixed, hybrid.
 - Selected: fixed Stage A (5 epochs) + Stage B dual-cap runtime policy.
 

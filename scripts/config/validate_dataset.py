@@ -9,14 +9,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Set, Tuple
 import sys
 
-from datasets import load_dataset
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from lbp_project.config.io import load_yaml
+from lbp_project.data.hf_loading import load_dataset_split_with_policy
 
 
 def parse_args() -> argparse.Namespace:
@@ -105,10 +104,23 @@ def print_split_info(
     ds_name: str,
     split: str,
     cache_dir: str,
+    allow_downloads: bool,
+    allow_cache_repair: bool,
+    allow_partial_local_shards: bool,
+    partial_local_min_shards: int,
     collect_ids: bool = False,
     progress_every: int = 2000,
 ) -> Tuple[int, Set[str]]:
-    ds = load_dataset(ds_name, split=split, cache_dir=cache_dir, streaming=False)
+    ds = load_dataset_split_with_policy(
+        ds_name,
+        split,
+        cache_dir=cache_dir,
+        allow_downloads=allow_downloads,
+        allow_cache_repair=allow_cache_repair,
+        allow_partial_local_shards=allow_partial_local_shards,
+        partial_local_min_shards=partial_local_min_shards,
+        log_prefix="[validate-dataset]",
+    )
     first = ds[0]
     log(f"  - {ds_name}:{split} -> samples={len(ds)} keys={sorted(first.keys())}")
     if not collect_ids:
@@ -219,6 +231,15 @@ def main() -> None:
         cfg_file = Path(cfg_path)
         cfg = load_yaml(cfg_file)
         data_cfg = cfg["data"]
+        allow_downloads = bool(data_cfg.get("allow_hf_downloads", True))
+        allow_partial_local_shards = bool(data_cfg.get("allow_partial_local_shards", False))
+        partial_local_min_shards = int(data_cfg.get("partial_local_shards_min_per_split", 1))
+        allow_cache_repair = bool(
+            data_cfg.get(
+                "repair_hf_cache_once",
+                allow_downloads and not allow_partial_local_shards,
+            )
+        )
 
         log(f"\n== Shard audit for {cfg_file} ==")
         cache_dir = data_cfg["cache_dir"]
@@ -227,6 +248,10 @@ def main() -> None:
                 data_cfg["train_dataset_name"],
                 data_cfg["train_split"],
                 cache_dir,
+                allow_downloads,
+                allow_cache_repair,
+                allow_partial_local_shards,
+                partial_local_min_shards,
                 collect_ids=args.verify_index_coverage,
                 progress_every=args.progress_every,
             )
@@ -234,6 +259,10 @@ def main() -> None:
                 data_cfg["val_dataset_name"],
                 data_cfg["val_split"],
                 cache_dir,
+                allow_downloads,
+                allow_cache_repair,
+                allow_partial_local_shards,
+                partial_local_min_shards,
                 collect_ids=args.verify_index_coverage,
                 progress_every=args.progress_every,
             )
@@ -245,6 +274,10 @@ def main() -> None:
                 data_cfg["train_dataset_name"],
                 data_cfg["train_split"],
                 args.fallback_cache_dir,
+                allow_downloads,
+                allow_cache_repair,
+                allow_partial_local_shards,
+                partial_local_min_shards,
                 collect_ids=args.verify_index_coverage,
                 progress_every=args.progress_every,
             )
@@ -252,6 +285,10 @@ def main() -> None:
                 data_cfg["val_dataset_name"],
                 data_cfg["val_split"],
                 args.fallback_cache_dir,
+                allow_downloads,
+                allow_cache_repair,
+                allow_partial_local_shards,
+                partial_local_min_shards,
                 collect_ids=args.verify_index_coverage,
                 progress_every=args.progress_every,
             )

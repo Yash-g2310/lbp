@@ -2,7 +2,7 @@
 
 Last reviewed: 2026-04-08
 Scope: Planning source-of-truth for the updated PI-HAF program with DINO backbone and wavelet-first interaction.
-Status: Approved for implementation start.
+Status: Implementation in progress (through Phase D runtime contract).
 
 ## Scope Lock Update (2026-04-07)
 
@@ -19,6 +19,11 @@ Status: Approved for implementation start.
 - stage-aware CLI entrypoints,
 - manifest-backed reproducibility metadata in train/eval reports,
 - Stage B periodic real-eval cadence policy defaults (10 epochs) in server profiles.
+5. Implementation update (2026-04-08): Phases A-D are now implemented in active runtime:
+- Phase A: dataloader empty-space `L1 = L2` + inverse-depth normalized flow-space `[-1,1]`.
+- Phase B: full AdaLN-Zero `(layer_id, timestep)` conditioning path in decoder residual flow.
+- Phase C: server stable precision profile aligned (`force_fp32_impl=false`) with mixed-precision policy.
+- Phase D: Stage B dual-cap runtime stop and mandatory terminal full real eval with hard-fail policy.
 
 ## Program Objective
 
@@ -41,22 +46,27 @@ Build a theoretically sound, implementation-safe layered depth pipeline using an
 - Auto-expand predictions to all layer IDs referenced by tuples.
 4. Backbone choice:
 - Primary baseline: DINOv3 ConvNeXt-Small distilled.
-- First fallback: DINOv3 ViT-S16+ distilled.
+- First fallback candidate (48GB-class server profile): DINOv3 ViT-B16 distilled (`dinov3_vitb16`).
 - If primary/fallback are unavailable: stop and ask user interactively for next action.
 - DINOv2 temporary plumbing fallback is disabled by default and requires explicit one-off approval.
+ - Default policy remains hard-stop/no-silent-fallback (`backbone_stop_on_failure=true`, `backbone_fallback_approved=false`) for both local and server stage workflows.
 5. Wavelet defaults:
 - Default family: `sym4`.
 - Fallback family: `bior3.5`.
 - Default decomposition level: 2.
-6. Stage B runtime policy target:
+6. Stage B runtime policy:
 - 25 epochs preferred, may run up to 30 if budget remains.
-- Hard stop at `min(24h, 30 epochs)`.
+- Hard stop at `min(24h, 30 epochs)` with 24h measured from server job start.
 - Final full real evaluation is mandatory at stop.
+- If terminal full real evaluation fails, the run hard-fails (non-zero exit).
 7. Depth-space migration policy:
 - PI-HAF flow target requires inverse-depth normalized to `[-1,1]`.
 - Migration is a retraining boundary; no checkpoint compatibility shim.
 8. Documentation policy:
 - Context must explicitly separate implemented now vs approved target pending implementation.
+9. Data-loading policy by environment:
+- Local profiles run offline partial-shard mode (existing Arrow shards only, no remote dataset downloads).
+- Server profiles run non-partial full-shard mode from staged/cache roots.
 
 ## Phase Map
 
@@ -98,16 +108,18 @@ Build a theoretically sound, implementation-safe layered depth pipeline using an
 ## Incremental Implementation Roadmap (Post-Context)
 
 1. Phase A: Data-space migration
-- Implement dataloader empty-space rule (`L1 = L2` contract) and inverse-depth normalization to `[-1,1]`.
+- Implemented (2026-04-08): dataloader empty-space rule (`L1 = L2`) and inverse-depth normalization to `[-1,1]`.
 
 2. Phase B: Conditioning migration
-- Implement AdaLN-Zero full-scope conditioning with `(layer_id, timestep)` propagated through decoder blocks.
+- Implemented (2026-04-08): AdaLN-Zero full-scope conditioning with `(layer_id, timestep)` propagated through decoder blocks.
 
 3. Phase C: Stability migration
-- Implement precision policy target (BF16 global + FP32 wavelet bubble) and dynamic window padding safeguards.
+- Implemented in active server profiles (2026-04-08): precision-policy alignment with stable mixed precision defaults.
+- Remaining target: dynamic window padding safeguards in legacy hard-fail window-size paths.
 
 4. Phase D: Runtime policy migration
-- Implement Stage B dual-cap stop behavior and mandatory final full real evaluation trigger.
+- Implemented (2026-04-08): Stage B dual-cap stop behavior and mandatory final full real evaluation trigger.
+- Terminal full real evaluation failure now hard-fails the run.
 
 5. Phase E: Promotion and recalibration
 - Retrain from scratch on migrated depth-space path and recalibrate gate thresholds before promotion.

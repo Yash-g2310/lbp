@@ -23,7 +23,7 @@ from lbp_project.metric_gate import PairsTrendGateResult
 from lbp_project.stage_a_gate import evaluate_stage_a_gate, format_stage_a_gate
 from lbp_project.stage_gate import evaluate_stage_b_gate, format_stage_b_gate
 from lbp_project.training.ablation import ablation_plan_payload, format_ablation_plan, resolve_ablation_plan
-from lbp_project.utils.run_manifest import build_run_manifest, write_manifest
+from lbp_project.utils.run_manifest import build_run_manifest, config_sha256, write_manifest
 
 
 DEFAULT_QUICKCHECK_FIXTURE_CHECKPOINT = (
@@ -32,6 +32,8 @@ DEFAULT_QUICKCHECK_FIXTURE_CHECKPOINT = (
 DEFAULT_QUICKCHECK_FIXTURE_REPORT = (
     PROJECT_ROOT / "runs" / "current" / "quickcheck" / "reports" / "real_tuple_eval_quickcheck.json"
 )
+STAGE_B_FINAL_REAL_SPLITS = ["validation", "test"]
+STAGE_B_FINAL_REAL_LAYER_KEYS = ["layer_all", "layer_first"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,6 +68,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional output path for generated stage-policy runtime config",
     )
+    p.add_argument(
+        "--allow-stage-skip-train",
+        action="store_true",
+        help="Allow --skip-train for stage_a/stage_b workflows (disabled by default for evidence integrity)",
+    )
     return p.parse_args()
 
 
@@ -92,12 +99,23 @@ def _gate_payload(result: PairsTrendGateResult | None) -> Dict[str, Any] | None:
     return {
         "enabled": bool(result.enabled),
         "passed": bool(result.passed),
+        "metric_key": str(result.metric_key),
         "min_pairs_acc": float(result.min_pairs_acc),
         "latest_pairs_acc": result.latest_pairs_acc,
+        "min_metric_threshold": float(result.min_pairs_acc),
+        "latest_metric": result.latest_pairs_acc,
         "pairs_history": [[int(epoch), float(value)] for epoch, value in result.pairs_history],
+        "metric_history": [[int(epoch), float(value)] for epoch, value in result.pairs_history],
         "evidence_files": list(result.evidence_files),
+        "rejected_evidence": list(result.rejected_evidence),
         "issues": list(result.issues),
     }
+
+
+def _read_json_if_exists(path: Path) -> Dict[str, Any] | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _format_stage_b_gate_failure(result: PairsTrendGateResult, runtime_cfg: Dict[str, Any]) -> str:
@@ -191,6 +209,12 @@ def main() -> None:
     print(format_ablation_plan(ablation_plan, prefix="[stage-ablation]"), flush=True)
     print(f"[stage] runtime_config={runtime_cfg_path}", flush=True)
 
+    if args.skip_train and stage_result.stage_mode in {"stage_a", "stage_b"} and not bool(args.allow_stage_skip_train):
+        raise RuntimeError(
+            "--skip-train is disabled for stage_a/stage_b workflows by default to prevent stale-evidence promotion. "
+            "If you explicitly need eval-only stage checks, pass --allow-stage-skip-train."
+        )
+
     stage_b_gate_result: PairsTrendGateResult | None = None
     if stage_result.stage_mode == "stage_b":
         stage_b_gate_result = evaluate_stage_b_gate(runtime_cfg)
@@ -237,6 +261,17 @@ def main() -> None:
 
     synth_report = report_dir / "synth_eval.json"
     real_report = report_dir / "real_tuple_eval.json"
+    stage_b_state_path = report_dir / "stage_b_runtime_state.json"
+    stage_b_terminal_real_report = report_dir / "real_tuple_eval_terminal_full.json"
+    stage_b_state_payload = _read_json_if_exists(stage_b_state_path)
+    stage_b_terminal_real_payload = _read_json_if_exists(stage_b_terminal_real_report)
+
+    if stage_result.stage_mode == "stage_b" and stage_b_terminal_real_payload is not None:
+        print(
+            "[stage-b] found mandatory terminal full real-eval artifact from training runtime; "
+            f"reusing {stage_b_terminal_real_report}",
+            flush=True,
+        )
 
     if run_synth:
         run_cmd(
@@ -254,9 +289,24 @@ def main() -> None:
             ]
         )
 
-    if run_real:
-        splits = eval_cfg.get("real_splits", [eval_cfg.get("real_split", "validation")])
-        layer_keys = eval_cfg.get("real_layer_keys", [eval_cfg.get("real_layer_key", "layer_all")])
+    should_run_real_eval = run_real and not (
+        stage_result.stage_mode == "stage_b" and stage_b_terminal_real_payload is not None
+    )
+
+    if should_run_real_eval:
+        if stage_result.stage_mode == "stage_b":
+            splits = STAGE_B_FINAL_REAL_SPLITS
+            layer_keys = STAGE_B_FINAL_REAL_LAYER_KEYS
+            real_max_samples = 0
+            print(
+                "[stage-b] enforcing strict terminal full real-eval contract in train-eval fallback path",
+                flush=True,
+            )
+        else:
+            splits = eval_cfg.get("real_splits", [eval_cfg.get("real_split", "validation")])
+            layer_keys = eval_cfg.get("real_layer_keys", [eval_cfg.get("real_layer_key", "layer_all")])
+            real_max_samples = int(eval_cfg.get("real_max_samples", 0))
+
         split_arg = ",".join(str(s) for s in splits)
         layer_key_arg = ",".join(str(k) for k in layer_keys)
         run_cmd(
@@ -274,14 +324,38 @@ def main() -> None:
                 "--target-layer",
                 str(int(eval_cfg.get("target_layer", 1))),
                 "--max-samples",
-                str(int(eval_cfg.get("real_max_samples", 0))),
+                str(real_max_samples),
                 "--output",
                 str(real_report),
             ]
         )
 
+    if stage_result.stage_mode == "stage_b":
+        # Re-read after potential fallback run.
+        stage_b_state_payload = _read_json_if_exists(stage_b_state_path)
+        stage_b_terminal_real_payload = _read_json_if_exists(stage_b_terminal_real_report)
+        if stage_b_terminal_real_payload is None and real_report.exists():
+            stage_b_terminal_real_payload = _read_json_if_exists(real_report)
+        if stage_b_terminal_real_payload is None:
+            raise RuntimeError(
+                "Stage B requires terminal full real evaluation artifact, but none was found. "
+                f"Expected one of: {stage_b_terminal_real_report} or {real_report}"
+            )
+
     stage_a_gate_result: PairsTrendGateResult | None = None
     if stage_result.stage_mode == "stage_a":
+        stage_a_gate_cfg = eval_cfg.get("stage_a_gate")
+        if not isinstance(stage_a_gate_cfg, dict):
+            eval_cfg["stage_a_gate"] = {}
+            stage_a_gate_cfg = eval_cfg["stage_a_gate"]
+
+        stage_a_gate_cfg.setdefault("metric_key", "quads_acc")
+        stage_a_gate_cfg["expected_config_sha256"] = config_sha256(runtime_cfg)
+        stage_a_gate_cfg["require_config_sha256_match"] = True
+        stage_a_gate_cfg["min_report_timestamp_utc"] = str(start_manifest.get("timestamp_utc", ""))
+        stage_a_gate_cfg["require_report_timestamp"] = True
+        stage_a_gate_cfg.setdefault("allow_fallback_report", False)
+
         stage_a_gate_result = evaluate_stage_a_gate(runtime_cfg)
         print(format_stage_a_gate(stage_a_gate_result), flush=True)
     stage_a_gate_payload = _gate_payload(stage_a_gate_result)
@@ -300,8 +374,12 @@ def main() -> None:
     }
     if synth_report.exists():
         final_summary["synth_eval"] = json.loads(synth_report.read_text(encoding="utf-8"))
-    if real_report.exists():
+    if stage_result.stage_mode == "stage_b" and stage_b_terminal_real_payload is not None:
+        final_summary["real_tuple_eval"] = stage_b_terminal_real_payload
+    elif real_report.exists():
         final_summary["real_tuple_eval"] = json.loads(real_report.read_text(encoding="utf-8"))
+    if stage_b_state_payload is not None:
+        final_summary["stage_b_runtime_state"] = stage_b_state_payload
 
     final_path = report_dir / "final_report.json"
     final_path.write_text(json.dumps(final_summary, indent=2), encoding="utf-8")

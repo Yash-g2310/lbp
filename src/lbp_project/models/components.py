@@ -94,10 +94,25 @@ class HAB(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape
         shortcut = x
-        x = self.norm1(x.permute(0, 2, 3, 1).contiguous())
-        x_windows = window_partition(x, self.window_size).view(-1, self.window_size * self.window_size, C)
+
+        # Apply LayerNorm in channel-last form, then convert back for safe spatial padding.
+        x = self.norm1(x.permute(0, 2, 3, 1).contiguous()).permute(0, 3, 1, 2).contiguous()
+
+        pad_h = (self.window_size - (H % self.window_size)) % self.window_size
+        pad_w = (self.window_size - (W % self.window_size)) % self.window_size
+        if pad_h > 0 or pad_w > 0:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode="replicate")
+
+        Hp, Wp = x.shape[-2:]
+        x_windows = window_partition(
+            x.permute(0, 2, 3, 1).contiguous(),
+            self.window_size,
+        ).view(-1, self.window_size * self.window_size, C)
         attn_windows = self.attn(x_windows).view(-1, self.window_size, self.window_size, C)
-        x = window_reverse(attn_windows, self.window_size, H, W).permute(0, 3, 1, 2).contiguous()
+        x = window_reverse(attn_windows, self.window_size, Hp, Wp).permute(0, 3, 1, 2).contiguous()
+        if pad_h > 0 or pad_w > 0:
+            x = x[..., :H, :W]
+
         x = shortcut + x
         x = x + self.conv_block(x)
         shortcut = x

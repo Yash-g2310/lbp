@@ -20,12 +20,16 @@ Scope: repository `lbp/lbp` only.
 1. Implemented now:
 - Stage command orchestration, gate wiring, manifests, and tuple P/T/Q reporting contracts.
 - ConvNeXt-S distilled backbone policy as active baseline.
-
-2. Approved target (pending full implementation lock):
 - Dataloader-level empty-space rule (`L1 = L2` for opaque/no-front-layer cases).
 - Inverse-depth normalized training space bounded to `[-1,1]` for flow trajectory training.
-- AdaLN-Zero full-scope conditioning with `(layer_id, timestep)` through decoder residual blocks.
-- Stage B dual-cap runtime policy: 25 preferred, up to 30 if budget remains, hard stop at `min(24h, 30 epochs)` with mandatory final full real evaluation.
+- AdaLN-Zero full-scope conditioning with `(layer_id, timestep)` through decoder residual blocks in active `lbp_project` model path.
+- Stage B dual-cap runtime policy: hard stop at `min(24h from server job start, 30 epochs)`.
+- Stage B terminal full real evaluation contract: validation+test, `layer_all`+`layer_first`, full samples, hard-fail on terminal eval failure.
+- Stable server profile precision alignment: `force_fp32_impl=false` with mixed-precision runtime policy.
+
+2. Approved target (pending later migration waves):
+- Dynamic window divisibility padding replacement for pre-migration hard-fail paths where still applicable.
+- Post-migration recalibration (Phase E): retraining outcomes and gate-threshold recalibration before promotion.
 
 3. Migration boundary decision:
 - Depth-space migration is a retraining boundary; legacy positive-depth checkpoints are not promoted across this boundary.
@@ -138,7 +142,7 @@ Run tags inside each experiment:
 
 ## Immediate Open Questions To Confirm Before Experiment 01 Build
 
-1. Exact local one-shard paths for train and validation.
+1. Confirm local retained shard minimum remains >=1 for synthetic train and validation under offline partial-shard mode.
 2. Exact full-data root path to be used for server 15-20 epoch run.
 3. Primary supervised objective for Experiment 01:
 - Stage 1: Flow + SSI

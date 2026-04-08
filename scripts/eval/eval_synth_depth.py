@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from contextlib import nullcontext
 from pathlib import Path
+from typing import Any, Dict
 import sys
 
 import torch
@@ -20,6 +20,7 @@ from lbp_project.config.io import load_yaml
 from lbp_project.data.dataset import get_dataloaders
 from lbp_project.models.factory import build_depth_model
 from lbp_project.utils.checkpoints import load_checkpoint_model
+from lbp_project.utils.eval_inference import predict_depth_for_eval, resolve_flow_eval_settings
 from lbp_project.utils.losses import SILogLoss
 from lbp_project.utils.metrics import RunningAverage, compute_depth_metrics
 from lbp_project.utils.run_manifest import build_run_manifest
@@ -37,6 +38,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     cfg = load_yaml(args.config)
+    flow_eval = resolve_flow_eval_settings(cfg)
 
     device = torch.device("cuda" if torch.cuda.is_available() and cfg["hardware"]["device"] == "cuda" else "cpu")
     amp_enabled = bool(cfg["hardware"].get("amp", True)) and device.type == "cuda"
@@ -46,7 +48,11 @@ def main() -> None:
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     _, val_loader = get_dataloaders(cfg)
-    model = build_depth_model(cfg, device)
+    model_cfg = dict(cfg)
+    model_cfg["architecture"] = dict(cfg.get("architecture", {}))
+    if bool(flow_eval["flow_mode"]):
+        model_cfg["architecture"]["enable_velocity_head"] = True
+    model = build_depth_model(model_cfg, device)
     missing, unexpected = load_checkpoint_model(model, checkpoint_path, device=device, strict=True)
     if missing or unexpected:
         raise RuntimeError(
@@ -123,18 +129,21 @@ def main() -> None:
                         dtype=torch.long,
                     )
 
-                    amp_ctx = (
-                        torch.autocast(device_type="cuda", enabled=amp_enabled)
-                        if device.type == "cuda"
-                        else nullcontext()
+                    pred = predict_depth_for_eval(
+                        model,
+                        images_sub,
+                        target_layer=target_layer,
+                        precomputed_dino=precomputed_sub,
+                        device=device,
+                        amp_enabled=amp_enabled,
+                        use_flow_inference=bool(flow_eval["use_flow_inference"]),
+                        flow_steps=int(flow_eval["flow_steps"]),
+                        flow_t_low=float(flow_eval["flow_t_low"]),
+                        flow_t_high=float(flow_eval["flow_t_high"]),
+                        flow_init=str(flow_eval["flow_init"]),
+                        depth_clip_min=float(flow_eval["depth_clip_min"]),
+                        depth_clip_max=float(flow_eval["depth_clip_max"]),
                     )
-                    with amp_ctx:
-                        pred = model(
-                            images_sub,
-                            target_layer=target_layer,
-                            return_intermediate=False,
-                            precomputed_dino=precomputed_sub,
-                        )
 
                     layer_id = layer_idx + 1
                     meter = layer_meter(layer_id)
@@ -161,14 +170,36 @@ def main() -> None:
                         rmse_l2.update(metric_vals["rmse"])
                         delta1_l2.update(metric_vals["delta1"])
             else:
-                amp_ctx = (
-                    torch.autocast(device_type="cuda", enabled=amp_enabled)
-                    if device.type == "cuda"
-                    else nullcontext()
+                pred_1 = predict_depth_for_eval(
+                    model,
+                    images,
+                    target_layer=1,
+                    precomputed_dino=precomputed_dino,
+                    device=device,
+                    amp_enabled=amp_enabled,
+                    use_flow_inference=bool(flow_eval["use_flow_inference"]),
+                    flow_steps=int(flow_eval["flow_steps"]),
+                    flow_t_low=float(flow_eval["flow_t_low"]),
+                    flow_t_high=float(flow_eval["flow_t_high"]),
+                    flow_init=str(flow_eval["flow_init"]),
+                    depth_clip_min=float(flow_eval["depth_clip_min"]),
+                    depth_clip_max=float(flow_eval["depth_clip_max"]),
                 )
-                with amp_ctx:
-                    pred_1 = model(images, target_layer=1, return_intermediate=False, precomputed_dino=precomputed_dino)
-                    pred_2 = model(images, target_layer=2, return_intermediate=False, precomputed_dino=precomputed_dino)
+                pred_2 = predict_depth_for_eval(
+                    model,
+                    images,
+                    target_layer=2,
+                    precomputed_dino=precomputed_dino,
+                    device=device,
+                    amp_enabled=amp_enabled,
+                    use_flow_inference=bool(flow_eval["use_flow_inference"]),
+                    flow_steps=int(flow_eval["flow_steps"]),
+                    flow_t_low=float(flow_eval["flow_t_low"]),
+                    flow_t_high=float(flow_eval["flow_t_high"]),
+                    flow_init=str(flow_eval["flow_init"]),
+                    depth_clip_min=float(flow_eval["depth_clip_min"]),
+                    depth_clip_max=float(flow_eval["depth_clip_max"]),
+                )
 
                 l1 = float(criterion(pred_1, depth_1).item())
                 l2 = float(criterion(pred_2, depth_2).item())
@@ -206,6 +237,10 @@ def main() -> None:
         "split": cfg["data"]["val_split"],
         "dataset": cfg["data"]["val_dataset_name"],
         "batches_evaluated": batches_done,
+        "flow_mode": bool(flow_eval["flow_mode"]),
+        "flow_inference_enabled": bool(flow_eval["use_flow_inference"]),
+        "flow_inference_steps": int(flow_eval["flow_steps"]),
+        "flow_inference_init": str(flow_eval["flow_init"]),
         "silog_layer1": silog_l1.mean,
         "silog_layer2": silog_l2.mean,
         "silog_mean": silog_all.mean,
