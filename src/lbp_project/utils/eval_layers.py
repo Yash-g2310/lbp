@@ -14,12 +14,19 @@ def resolve_required_layers(
     sample: dict,
     layer_key: str,
     target_layer_override: int | None = None,
+    max_layer_id: int | None = None,
 ) -> List[int]:
     if target_layer_override is not None and int(target_layer_override) > 0:
-        return [int(target_layer_override)]
+        target = int(target_layer_override)
+        if max_layer_id is not None and target > int(max_layer_id):
+            return []
+        return [target]
 
     required = extract_required_layer_ids(sample, layer_key=layer_key)
     required = sorted({int(layer_id) for layer_id in required if int(layer_id) > 0})
+    if max_layer_id is not None:
+        max_layer_id = int(max_layer_id)
+        required = [layer_id for layer_id in required if layer_id <= max_layer_id]
     return required
 
 

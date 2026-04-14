@@ -101,6 +101,7 @@ def main() -> None:
     eval_cfg = cfg.get("evaluation", {})
     data_cfg = cfg.get("data", {})
     flow_eval = resolve_flow_eval_settings(cfg)
+    max_layer_id = int(cfg.get("architecture", {}).get("max_layer_id", 8))
 
     deterministic_real_eval = bool(eval_cfg.get("deterministic_real_eval", True))
     eval_seed_cfg = int(eval_cfg.get("real_eval_seed", cfg.get("experiment", {}).get("seed", 42)))
@@ -240,8 +241,19 @@ def main() -> None:
                             sample,
                             layer_key=layer_key,
                             target_layer_override=None,
+                            max_layer_id=max_layer_id,
                         )
                         if not required_layers:
+                            counts = evaluate_tuple_sample_multi_layer(
+                                {},
+                                sample,
+                                original_size=original_size,
+                                layer_key=layer_key,
+                            )
+                            missing_layer_tuples_total += int(
+                                counts.get("missing_layer_tuples", {}).get("total", 0)
+                            )
+                            merge_tuple_counts(totals, counts)
                             processed += 1
                             continue
 

@@ -228,9 +228,6 @@ def evaluate_tuple_sample_multi_layer(
     layer_key: str = "layer_all",
 ) -> Dict[str, Dict[str, int]]:
     """Evaluate tuple accuracy using per-layer prediction maps from multi-pass inference."""
-    if not predicted_depth_by_layer:
-        raise ValueError("predicted_depth_by_layer is empty")
-
     annotation_key = "tuples.json" if "tuples.json" in sample else None
     if annotation_key is None:
         raise KeyError("Sample does not contain tuples.json annotations")
