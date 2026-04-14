@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from functools import partial
 from pathlib import Path
 import re
 from typing import Any, Dict, Optional
@@ -289,12 +290,18 @@ class LayeredDepthDataset(Dataset):
 # ==========================================
 # 2. BATCH COLLATION
 # ==========================================
-def collate_fn(batch):
+def collate_fn(batch, fixed_max_layers: Optional[int] = None):
     depth_1 = torch.stack([b["depth_1"] for b in batch])
     depth_2 = torch.stack([b["depth_2"] for b in batch])
 
     available_layers = [list(b.get("available_layers", [])) for b in batch]
-    max_layer = max(1, max((max(layers) if layers else 0) for layers in available_layers))
+    dynamic_max_layer = max(1, max((max(layers) if layers else 0) for layers in available_layers))
+    if fixed_max_layers is not None:
+        if int(fixed_max_layers) < 1:
+            raise ValueError(f"fixed_max_layers must be >= 1 when set, got {fixed_max_layers}")
+        max_layer = int(fixed_max_layers)
+    else:
+        max_layer = dynamic_max_layer
 
     bsz = len(batch)
     layer_shape = depth_1.shape[1:]
@@ -440,7 +447,7 @@ def get_dataloaders(cfg: Dict[str, Any]) -> tuple[DataLoader, DataLoader]:
     train_loader = DataLoader(
         train_dataset,
         batch_size=int(data_cfg["batch_size"]),
-        collate_fn=collate_fn,
+        collate_fn=partial(collate_fn, fixed_max_layers=max_layers),
         shuffle=True,
         drop_last=True,
         **loader_common,
@@ -449,7 +456,7 @@ def get_dataloaders(cfg: Dict[str, Any]) -> tuple[DataLoader, DataLoader]:
     val_loader = DataLoader(
         val_dataset,
         batch_size=int(data_cfg.get("val_batch_size", 1)),
-        collate_fn=collate_fn,
+        collate_fn=partial(collate_fn, fixed_max_layers=max_layers),
         shuffle=False,
         drop_last=False,
         **loader_common,

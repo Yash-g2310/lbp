@@ -134,6 +134,12 @@ def validate_config_dict(cfg: Dict[str, Any], source: str | Path | None = None) 
         raise ValueError(
             f"{_path_label(source)}: architecture.enable_velocity_head must be a boolean"
         )
+    if "use_scalar_layer_prompt" in cfg["architecture"] and not isinstance(
+        cfg["architecture"].get("use_scalar_layer_prompt"), bool
+    ):
+        raise ValueError(
+            f"{_path_label(source)}: architecture.use_scalar_layer_prompt must be a boolean"
+        )
     if "velocity_hidden_channels" in cfg["architecture"]:
         hidden = int(cfg["architecture"]["velocity_hidden_channels"])
         if hidden < 1:
@@ -329,6 +335,13 @@ def validate_config_dict(cfg: Dict[str, Any], source: str | Path | None = None) 
                 raise ValueError(
                     f"{_path_label(source)}: training.staged_losses.wavelet_fallback_family must be one of {sorted(allowed_families)}"
                 )
+
+            if "stage2_aux_ramp_epochs" in staged_cfg:
+                aux_ramp_epochs = int(staged_cfg.get("stage2_aux_ramp_epochs", 1))
+                if aux_ramp_epochs < 1:
+                    raise ValueError(
+                        f"{_path_label(source)}: training.staged_losses.stage2_aux_ramp_epochs must be >= 1"
+                    )
 
     ablation_cfg = cfg["training"].get("ablation", {})
     if ablation_cfg:

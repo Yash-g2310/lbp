@@ -231,8 +231,18 @@ def flow_component_weights_for_epoch(
 
     flow_weight = float(staged_cfg.get("flow_weight", 1.0))
     ssi_weight = float(staged_cfg.get("ssi_weight", 1.0))
-    wavelet_weight = float(staged_cfg.get("wavelet_weight", 0.0)) if stage2_active else 0.0
-    ordinal_weight = float(staged_cfg.get("ordinal_weight", 0.0)) if stage2_active else 0.0
+    wavelet_base = float(staged_cfg.get("wavelet_weight", 0.0))
+    ordinal_base = float(staged_cfg.get("ordinal_weight", 0.0))
+    stage2_aux_ramp_epochs = max(1, int(staged_cfg.get("stage2_aux_ramp_epochs", 1)))
+
+    if stage2_active:
+        stage2_epoch_index = max(0, epoch - boundaries.stage_a_end_epoch)
+        aux_ramp = min(1.0, float(stage2_epoch_index + 1) / float(stage2_aux_ramp_epochs))
+        wavelet_weight = wavelet_base * aux_ramp
+        ordinal_weight = ordinal_base * aux_ramp
+    else:
+        wavelet_weight = 0.0
+        ordinal_weight = 0.0
 
     return {
         "flow_weight": flow_weight,
@@ -257,6 +267,7 @@ def compute_dynamic_multistage_loss(
     precomputed_dino: torch.Tensor | None,
     ordinal_weight: float,
     smoothness_weight: float,
+    ordinal_loss_clip: float = 0.0,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     if depth_targets.ndim != 5:
         raise ValueError(f"depth_targets must be [B,L,1,H,W], got {tuple(depth_targets.shape)}")
@@ -353,6 +364,9 @@ def compute_dynamic_multistage_loss(
 
         if ordinal_terms:
             ordinal_loss = torch.stack(ordinal_terms).mean()
+            if ordinal_loss_clip > 0.0:
+                components["ordinal_raw"] = float(ordinal_loss.detach().item())
+                ordinal_loss = torch.clamp(ordinal_loss, max=float(ordinal_loss_clip))
             total = total + ordinal_weight * ordinal_loss
             components["ordinal"] = float(ordinal_loss.detach().item())
 
@@ -381,6 +395,7 @@ def compute_dynamic_flow_loss(
     ordinal_weight: float,
     flow_t_low: float,
     flow_t_high: float,
+    ordinal_loss_clip: float = 0.0,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     if depth_targets.ndim != 5:
         raise ValueError(f"depth_targets must be [B,L,1,H,W], got {tuple(depth_targets.shape)}")
@@ -507,6 +522,9 @@ def compute_dynamic_flow_loss(
 
         if ordinal_terms:
             ordinal_loss = torch.stack(ordinal_terms).mean()
+            if ordinal_loss_clip > 0.0:
+                components["ordinal_raw"] = float(ordinal_loss.detach().item())
+                ordinal_loss = torch.clamp(ordinal_loss, max=float(ordinal_loss_clip))
             total = total + ordinal_weight * ordinal_loss
             components["ordinal"] = float(ordinal_loss.detach().item())
 
@@ -751,6 +769,8 @@ def run_periodic_real_eval(
     layer_keys = eval_cfg.get("real_layer_keys", [eval_cfg.get("real_layer_key", "layer_all")])
     target_layer = int(eval_cfg.get("target_layer", 1))
     max_samples = int(eval_cfg.get("periodic_real_max_samples", 100))
+    deterministic_real_eval = bool(eval_cfg.get("deterministic_real_eval", True))
+    eval_seed = int(eval_cfg.get("real_eval_seed", cfg.get("experiment", {}).get("seed", 42)))
 
     cmd = [
         sys.executable,
@@ -770,6 +790,9 @@ def run_periodic_real_eval(
         "--output",
         str(output_path),
     ]
+
+    if deterministic_real_eval:
+        cmd.extend(["--seed", str(eval_seed)])
 
     if bool(eval_cfg.get("real_use_precomputed_dino", False)):
         cmd.append("--use-precomputed-dino")
@@ -907,6 +930,8 @@ def run_terminal_full_real_eval(
     split_arg = ",".join(STAGE_B_FINAL_REAL_SPLITS)
     layer_key_arg = ",".join(STAGE_B_FINAL_REAL_LAYER_KEYS)
     target_layer = int(eval_cfg.get("target_layer", 1))
+    deterministic_real_eval = bool(eval_cfg.get("deterministic_real_eval", True))
+    eval_seed = int(eval_cfg.get("real_eval_seed", cfg.get("experiment", {}).get("seed", 42)))
 
     cmd = [
         sys.executable,
@@ -926,6 +951,9 @@ def run_terminal_full_real_eval(
         "--output",
         str(output_path),
     ]
+
+    if deterministic_real_eval:
+        cmd.extend(["--seed", str(eval_seed)])
 
     if bool(eval_cfg.get("real_use_precomputed_dino", False)):
         cmd.append("--use-precomputed-dino")
@@ -1244,6 +1272,7 @@ def main() -> None:
     consecutive_amp_overflows = 0
     consecutive_nonfinite_steps = 0
     prev_flow_stage_label: str | None = None
+    ordinal_loss_clip = float(staged_cfg.get("ordinal_loss_clip", 0.0))
 
     log_terminal(
         log_to_terminal,
@@ -1400,6 +1429,7 @@ def main() -> None:
                         ordinal_weight=ordinal_w,
                         flow_t_low=flow_t_low,
                         flow_t_high=flow_t_high,
+                        ordinal_loss_clip=ordinal_loss_clip,
                     )
                     scaled_loss = loss / accum_steps
             elif dynamic_layers_enabled and depth_targets is not None and depth_layer_mask is not None:
@@ -1423,6 +1453,7 @@ def main() -> None:
                         precomputed_dino,
                         ordinal_weight=ordinal_w,
                         smoothness_weight=smoothness_w,
+                        ordinal_loss_clip=ordinal_loss_clip,
                     )
                     scaled_loss = loss / accum_steps
             else:
@@ -1599,6 +1630,10 @@ def main() -> None:
                             )
                     else:
                         consecutive_amp_overflows = 0
+                elif amp_scaler_enabled and amp_runtime_enabled:
+                    # When we manually skip an AMP step (e.g., non-finite grads),
+                    # advance GradScaler state so next iteration can unscale again.
+                    scaler.update()
                 optimizer.zero_grad(set_to_none=True)
             else:
                 grad_norm = None
@@ -1746,6 +1781,7 @@ def main() -> None:
                             ordinal_weight=ordinal_w,
                             flow_t_low=flow_t_low,
                             flow_t_high=flow_t_high,
+                            ordinal_loss_clip=ordinal_loss_clip,
                         )
                     elif dynamic_layers_enabled and depth_targets is not None and depth_layer_mask is not None:
                         val_loss, _ = compute_dynamic_multistage_loss(
@@ -1762,6 +1798,7 @@ def main() -> None:
                             precomputed_dino,
                             ordinal_weight=ordinal_w,
                             smoothness_weight=smoothness_w,
+                            ordinal_loss_clip=ordinal_loss_clip,
                         )
                     else:
                         val_loss, _ = compute_multistage_loss(

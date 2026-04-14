@@ -153,7 +153,7 @@ def resolve_flow_eval_settings(cfg: dict[str, Any]) -> dict[str, Any]:
         "flow_mode": flow_mode,
         "use_flow_inference": bool(eval_cfg.get("flow_inference_enabled", flow_mode)),
         "flow_steps": int(eval_cfg.get("flow_inference_steps", 16)),
-        "flow_init": str(eval_cfg.get("flow_inference_init", "zeros")),
+        "flow_init": str(eval_cfg.get("flow_inference_init", "gaussian")),
         "flow_t_low": float(staged_cfg.get("flow_t_low", 0.0)),
         "flow_t_high": float(staged_cfg.get("flow_t_high", 1.0)),
         "depth_clip_min": float(data_cfg.get("depth_clip_min", 1.0e-3)),

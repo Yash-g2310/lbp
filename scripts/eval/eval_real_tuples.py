@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 from typing import Any, Dict
 import sys
 
+import numpy as np
 import torch
 import torchvision.transforms as transforms
 
@@ -39,7 +41,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--checkpoint", required=True, help="Checkpoint path")
     p.add_argument("--split", default="", help="Single split override (validation/test)")
     p.add_argument("--splits", default="", help="Comma-separated splits override, e.g. validation,test")
-    p.add_argument("--max-samples", type=int, default=0, help="Limit number of samples (0=all)")
+    p.add_argument(
+        "--max-samples",
+        type=int,
+        default=-1,
+        help="Limit number of samples (-1 uses config, 0=all)",
+    )
     p.add_argument("--layer-key", default="", help="Single tuple layer key override")
     p.add_argument("--layer-keys", default="", help="Comma-separated layer keys, e.g. layer_all,layer_first")
     p.add_argument("--target-layer", type=int, default=-1, help="Model target layer override")
@@ -58,6 +65,12 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Override precomputed feature index path for real eval",
     )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=-1,
+        help="Deterministic evaluation seed override (-1 uses config/evaluation.real_eval_seed)",
+    )
     p.add_argument("--output", required=True, help="Output JSON path")
     return p.parse_args()
 
@@ -72,12 +85,28 @@ def image_transform() -> transforms.Compose:
     )
 
 
+def set_eval_seed(seed: int) -> None:
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_yaml(args.config)
     eval_cfg = cfg.get("evaluation", {})
     data_cfg = cfg.get("data", {})
     flow_eval = resolve_flow_eval_settings(cfg)
+
+    deterministic_real_eval = bool(eval_cfg.get("deterministic_real_eval", True))
+    eval_seed_cfg = int(eval_cfg.get("real_eval_seed", cfg.get("experiment", {}).get("seed", 42)))
+    eval_seed = int(args.seed) if int(args.seed) >= 0 else eval_seed_cfg
+    if deterministic_real_eval:
+        set_eval_seed(eval_seed)
 
     if args.splits:
         splits = [s.strip() for s in args.splits.split(",") if s.strip()]
@@ -100,7 +129,10 @@ def main() -> None:
 
     target_layer = args.target_layer if args.target_layer > 0 else int(eval_cfg.get("target_layer", 1))
     multi_pass_eval = bool(eval_cfg.get("multi_pass_real_eval", True)) and not args.disable_multi_pass
-    max_samples = args.max_samples if args.max_samples > 0 else int(eval_cfg.get("real_max_samples", 0))
+    if int(args.max_samples) >= 0:
+        max_samples = int(args.max_samples)
+    else:
+        max_samples = int(eval_cfg.get("real_max_samples", 0))
     dataset_name = str(eval_cfg.get("real_dataset_name", "princeton-vl/LayeredDepth"))
     allow_hf_downloads = bool(data_cfg.get("allow_hf_downloads", True))
     allow_partial_local_shards = bool(data_cfg.get("allow_partial_local_shards", False))
@@ -289,6 +321,8 @@ def main() -> None:
                 "splits": splits,
                 "layer_keys": layer_keys,
                 "max_samples": int(max_samples),
+                "deterministic_real_eval": bool(deterministic_real_eval),
+                "real_eval_seed": int(eval_seed),
             },
         ),
         "dataset": dataset_name,
@@ -300,6 +334,8 @@ def main() -> None:
         "flow_inference_enabled": bool(flow_eval["use_flow_inference"]),
         "flow_inference_steps": int(flow_eval["flow_steps"]),
         "flow_inference_init": str(flow_eval["flow_init"]),
+        "deterministic_real_eval": bool(deterministic_real_eval),
+        "real_eval_seed": int(eval_seed),
         "use_precomputed_dino": use_precomputed_dino,
         "per_eval": per_eval,
         "aggregate": aggregate_summary,

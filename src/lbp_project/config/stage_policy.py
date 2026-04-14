@@ -122,10 +122,35 @@ def apply_stage_policy(
             result.warnings,
         )
 
-        _set(runtime_cfg, "evaluation.periodic_real_eval_every_epochs", 1, result.changes)
+        _set(runtime_cfg, "evaluation.periodic_real_eval_every_epochs", 5, result.changes)
         _set(runtime_cfg, "evaluation.run_after_train", True, result.changes)
+        _set(runtime_cfg, "evaluation.real_splits", ["validation"], result.changes)
         _set(runtime_cfg, "architecture.backbone_stop_on_failure", True, result.changes)
         _set(runtime_cfg, "architecture.backbone_fallback_approved", False, result.changes)
+
+        if "deterministic_real_eval" not in eval_cfg:
+            _set(runtime_cfg, "evaluation.deterministic_real_eval", True, result.changes)
+        if "real_eval_seed" not in eval_cfg:
+            _set(
+                runtime_cfg,
+                "evaluation.real_eval_seed",
+                int(runtime_cfg.get("experiment", {}).get("seed", 42)),
+                result.changes,
+            )
+
+        if "stage_a_terminal_test_eval" not in eval_cfg:
+            _set(runtime_cfg, "evaluation.stage_a_terminal_test_eval", True, result.changes)
+        if "stage_a_terminal_test_splits" not in eval_cfg:
+            _set(runtime_cfg, "evaluation.stage_a_terminal_test_splits", ["test"], result.changes)
+        if "stage_a_terminal_test_layer_keys" not in eval_cfg:
+            _set(
+                runtime_cfg,
+                "evaluation.stage_a_terminal_test_layer_keys",
+                ["layer_all", "layer_first"],
+                result.changes,
+            )
+        if "stage_a_terminal_test_max_samples" not in eval_cfg:
+            _set(runtime_cfg, "evaluation.stage_a_terminal_test_max_samples", 0, result.changes)
 
         if "periodic_real_max_samples" not in eval_cfg:
             base_max = int(eval_cfg.get("real_max_samples", 100))
@@ -189,6 +214,16 @@ def apply_stage_policy(
         _set(runtime_cfg, "evaluation.real_splits", ["validation", "test"], result.changes)
         _set(runtime_cfg, "evaluation.real_layer_keys", ["layer_all", "layer_first"], result.changes)
         _set(runtime_cfg, "evaluation.real_max_samples", 0, result.changes)
+
+        if "deterministic_real_eval" not in eval_cfg:
+            _set(runtime_cfg, "evaluation.deterministic_real_eval", True, result.changes)
+        if "real_eval_seed" not in eval_cfg:
+            _set(
+                runtime_cfg,
+                "evaluation.real_eval_seed",
+                int(runtime_cfg.get("experiment", {}).get("seed", 42)),
+                result.changes,
+            )
 
         stage_b_runtime_cfg = eval_cfg.get("stage_b_runtime")
         if not isinstance(stage_b_runtime_cfg, dict):
@@ -269,8 +304,21 @@ def validate_stage_policy(cfg: Dict[str, Any], stage_mode: str, strict: bool = F
         )
         periodic = int(eval_cfg.get("periodic_real_eval_every_epochs", 0))
         _require(
-            periodic == 1,
-            "Stage A policy expects evaluation.periodic_real_eval_every_epochs=1",
+            periodic == 5,
+            "Stage A policy expects evaluation.periodic_real_eval_every_epochs=5",
+            strict,
+            warnings,
+        )
+        splits = [str(x).strip().lower() for x in eval_cfg.get("real_splits", [eval_cfg.get("real_split", "")])]
+        _require(
+            "test" not in splits,
+            "Stage A policy expects evaluation.real_splits to exclude test (test is report-only terminal eval).",
+            strict,
+            warnings,
+        )
+        _require(
+            bool(eval_cfg.get("stage_a_terminal_test_eval", False)),
+            "Stage A policy expects evaluation.stage_a_terminal_test_eval=true",
             strict,
             warnings,
         )

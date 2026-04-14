@@ -21,7 +21,7 @@ data:
   partial_local_shards_min_per_split: 1
   repair_hf_cache_once: false
   pin_memory: true
-  persistent_workers: false
+  persistent_workers: true
   batch_size: 2
   val_batch_size: 1
   depth_scale: 1000.0
@@ -51,12 +51,13 @@ architecture:
       backbone_model: dinov3_vitb16
       backbone_backend: torch_hub
   max_layer_id: 8
+  use_scalar_layer_prompt: false
   adaln_zero:
     enabled: true
     layer_embed_dim: 64
     time_embed_dim: 64
     condition_dim: 128
-    timestep_default: 1.0
+    timestep_default: 0.5
 
 training:
   epochs: 20
@@ -90,8 +91,10 @@ training:
     stage_b_fraction: 0.7
     flow_weight: 1.0
     ssi_weight: 1.0
-    wavelet_weight: 0.02
-    ordinal_weight: 0.05
+    wavelet_weight: 0.01
+    ordinal_weight: 0.01
+    stage2_aux_ramp_epochs: 4
+    ordinal_loss_clip: 0.5
     ordinal_margin: 1.0e-2
     smoothness_weight: 0.01
     flow_t_low: 0.0
@@ -119,22 +122,35 @@ evaluation:
   run_after_train: false
   run_synth_validation: true
   run_real_tuple_eval: true
+  periodic_real_eval_every_epochs: 5
+  deterministic_real_eval: true
+  real_eval_seed: 42
   multi_pass_real_eval: true
+  flow_inference_enabled: true
+  flow_inference_steps: 24
+  flow_inference_init: gaussian
   real_dataset_name: princeton-vl/LayeredDepth
   real_split: validation
   real_layer_key: layer_all
   target_layer: 1
   synth_max_batches: 50
   real_max_samples: 100
+  stage_a_terminal_test_eval: true
+  stage_a_terminal_test_splits:
+    - test
+  stage_a_terminal_test_layer_keys:
+    - layer_all
+    - layer_first
+  stage_a_terminal_test_max_samples: 0
   report_dir: ./runs/current/reports
   checkpoint_name: best_checkpoint.pth
   stage_a_gate:
     enabled: true
     metric_key: quads_acc
-    min_pairs_acc: 5.0
+    min_pairs_acc: 35.2
     min_metric_total: 1.0
     max_missing_layer_ratio: 0.1
-    require_non_decreasing_pairs_trend: true
+    require_non_decreasing_pairs_trend: false
     min_points: 2
     trend_eps: 1.0e-8
     report_dir: ./runs/current/reports

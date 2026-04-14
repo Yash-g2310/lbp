@@ -246,6 +246,8 @@ def main() -> None:
     run_after_train = bool(eval_cfg.get("run_after_train", False))
     run_synth = bool(eval_cfg.get("run_synth_validation", True))
     run_real = bool(eval_cfg.get("run_real_tuple_eval", True))
+    deterministic_real_eval = bool(eval_cfg.get("deterministic_real_eval", True))
+    real_eval_seed = int(eval_cfg.get("real_eval_seed", runtime_cfg.get("experiment", {}).get("seed", 42)))
 
     if not args.skip_train:
         run_cmd([args.python, "train.py", "--config", str(runtime_cfg_path)])
@@ -261,10 +263,12 @@ def main() -> None:
 
     synth_report = report_dir / "synth_eval.json"
     real_report = report_dir / "real_tuple_eval.json"
+    stage_a_test_report = report_dir / "real_tuple_eval_stage_a_test.json"
     stage_b_state_path = report_dir / "stage_b_runtime_state.json"
     stage_b_terminal_real_report = report_dir / "real_tuple_eval_terminal_full.json"
     stage_b_state_payload = _read_json_if_exists(stage_b_state_path)
     stage_b_terminal_real_payload = _read_json_if_exists(stage_b_terminal_real_report)
+    stage_a_test_payload = _read_json_if_exists(stage_a_test_report)
 
     if stage_result.stage_mode == "stage_b" and stage_b_terminal_real_payload is not None:
         print(
@@ -309,26 +313,58 @@ def main() -> None:
 
         split_arg = ",".join(str(s) for s in splits)
         layer_key_arg = ",".join(str(k) for k in layer_keys)
-        run_cmd(
-            [
-                args.python,
-                "scripts/eval/eval_real_tuples.py",
-                "--config",
-                str(runtime_cfg_path),
-                "--checkpoint",
-                str(checkpoint),
-                "--splits",
-                split_arg,
-                "--layer-keys",
-                layer_key_arg,
-                "--target-layer",
-                str(int(eval_cfg.get("target_layer", 1))),
-                "--max-samples",
-                str(real_max_samples),
-                "--output",
-                str(real_report),
-            ]
+        real_eval_cmd = [
+            args.python,
+            "scripts/eval/eval_real_tuples.py",
+            "--config",
+            str(runtime_cfg_path),
+            "--checkpoint",
+            str(checkpoint),
+            "--splits",
+            split_arg,
+            "--layer-keys",
+            layer_key_arg,
+            "--target-layer",
+            str(int(eval_cfg.get("target_layer", 1))),
+            "--max-samples",
+            str(real_max_samples),
+            "--output",
+            str(real_report),
+        ]
+        if deterministic_real_eval:
+            real_eval_cmd.extend(["--seed", str(real_eval_seed)])
+        run_cmd(real_eval_cmd)
+
+    if stage_result.stage_mode == "stage_a" and bool(eval_cfg.get("stage_a_terminal_test_eval", False)):
+        test_splits = eval_cfg.get("stage_a_terminal_test_splits", ["test"])
+        test_layer_keys = eval_cfg.get("stage_a_terminal_test_layer_keys", ["layer_all", "layer_first"])
+        test_max_samples = int(eval_cfg.get("stage_a_terminal_test_max_samples", 0))
+        print(
+            "[stage-a] running terminal test tuple eval (report-only; excluded from checkpoint/gate decisions)",
+            flush=True,
         )
+        stage_a_test_cmd = [
+            args.python,
+            "scripts/eval/eval_real_tuples.py",
+            "--config",
+            str(runtime_cfg_path),
+            "--checkpoint",
+            str(checkpoint),
+            "--splits",
+            ",".join(str(s) for s in test_splits),
+            "--layer-keys",
+            ",".join(str(k) for k in test_layer_keys),
+            "--target-layer",
+            str(int(eval_cfg.get("target_layer", 1))),
+            "--max-samples",
+            str(test_max_samples),
+            "--output",
+            str(stage_a_test_report),
+        ]
+        if deterministic_real_eval:
+            stage_a_test_cmd.extend(["--seed", str(real_eval_seed)])
+        run_cmd(stage_a_test_cmd)
+        stage_a_test_payload = _read_json_if_exists(stage_a_test_report)
 
     if stage_result.stage_mode == "stage_b":
         # Re-read after potential fallback run.
@@ -380,6 +416,8 @@ def main() -> None:
         final_summary["real_tuple_eval"] = json.loads(real_report.read_text(encoding="utf-8"))
     if stage_b_state_payload is not None:
         final_summary["stage_b_runtime_state"] = stage_b_state_payload
+    if stage_a_test_payload is not None:
+        final_summary["real_tuple_eval_test_report_only"] = stage_a_test_payload
 
     final_path = report_dir / "final_report.json"
     final_path.write_text(json.dumps(final_summary, indent=2), encoding="utf-8")

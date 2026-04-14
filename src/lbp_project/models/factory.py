@@ -44,6 +44,7 @@ def build_depth_model(
         adaln_time_embed_dim=int(adaln_cfg.get("time_embed_dim", 64)),
         adaln_condition_dim=int(adaln_cfg.get("condition_dim", 128)),
         adaln_timestep_default=float(adaln_cfg.get("timestep_default", 1.0)),
+        use_scalar_layer_prompt=bool(cfg["architecture"].get("use_scalar_layer_prompt", False)),
         use_precomputed_dino=bool(use_precomputed_dino),
     ).to(device)
     return model

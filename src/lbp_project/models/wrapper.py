@@ -43,6 +43,7 @@ class DINOSFIN_Architecture_NEW(nn.Module):
                  adaln_time_embed_dim=64,
                  adaln_condition_dim=128,
                  adaln_timestep_default=1.0,
+                 use_scalar_layer_prompt=False,
                  use_precomputed_dino=False):
         """
         Args:
@@ -63,6 +64,7 @@ class DINOSFIN_Architecture_NEW(nn.Module):
         self.enable_velocity_head = bool(enable_velocity_head)
         self.adaln_zero_enabled = bool(adaln_zero_enabled)
         self.adaln_timestep_default = float(adaln_timestep_default)
+        self.use_scalar_layer_prompt = bool(use_scalar_layer_prompt)
         if self.max_layer_id < 1:
             raise ValueError(f"max_layer_id must be >= 1, got {self.max_layer_id}")
         if self.adaln_timestep_default < 0.0 or self.adaln_timestep_default > 1.0:
@@ -126,13 +128,15 @@ class DINOSFIN_Architecture_NEW(nn.Module):
                 )
             
         # 2. Calculate Input Channels for Decoder
-        # DINO gives C. RGB gives 3. Prompt gives 1. Total = C + 4.
-        in_c = self.dino_embed_dim + 3 + 1 
+        # DINO gives C and RGB gives 3. Scalar layer prompt is optional.
+        in_c = self.dino_embed_dim + 3 + (1 if self.use_scalar_layer_prompt else 0)
         
-        # 3. Prompt Projection
-        # We keep a scalar prompt map but learn it from categorical layer IDs.
-        self.layer_embed = nn.Embedding(self.max_layer_id + 1, 1)
-        nn.init.zeros_(self.layer_embed.weight)
+        # 3. Optional scalar prompt projection.
+        # Default is disabled in favor of AdaLN layer+timestep conditioning.
+        self.layer_embed: nn.Embedding | None = None
+        if self.use_scalar_layer_prompt:
+            self.layer_embed = nn.Embedding(self.max_layer_id + 1, 1)
+            nn.init.zeros_(self.layer_embed.weight)
 
         self.adaln_layer_embed: nn.Embedding | None = None
         self.adaln_time_embed: SinusoidalTimeEmbedding | None = None
@@ -341,10 +345,16 @@ class DINOSFIN_Architecture_NEW(nn.Module):
         
         # 2. Process Layer Prompt
         layer_ids = self._normalize_target_layer(target_layer, batch_size=B, device=x.device)
-        p_vec = self.layer_embed(layer_ids).view(B, 1, 1, 1).expand(-1, -1, x.shape[2], x.shape[3])
-        
+
         # 3. Early Fusion Concatenation
-        fused_input = torch.cat([x, dino_upsampled, p_vec], dim=1) 
+        if self.use_scalar_layer_prompt:
+            if self.layer_embed is None:
+                raise RuntimeError("use_scalar_layer_prompt=true but layer_embed is missing")
+            p_vec = self.layer_embed(layer_ids).view(B, 1, 1, 1).expand(-1, -1, x.shape[2], x.shape[3])
+            fused_input = torch.cat([x, dino_upsampled, p_vec], dim=1)
+        else:
+            fused_input = torch.cat([x, dino_upsampled], dim=1)
+
         adaln_condition = self._resolve_adaln_condition(
             layer_ids,
             flow_t=flow_t,
