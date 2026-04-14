@@ -25,6 +25,10 @@ else
 	echo "[FAIL] No python executable found. Set PYTHON_BIN explicitly." >&2
 	exit 1
 fi
+PY_ENV_ROOT="$(cd "$(dirname "$PYTHON_BIN")/.." && pwd)"
+if [[ -f "$PY_ENV_ROOT/lib/libstdc++.so.6" ]]; then
+	export LD_PRELOAD="$PY_ENV_ROOT/lib/libstdc++.so.6${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
 
 CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/server/default.yaml}"
 EVAL_SPLITS="${EVAL_SPLITS:-}"
@@ -39,6 +43,7 @@ REPORT_PATH="${REPORT_PATH:-$REPORT_DIR/real_tuple_eval_${SLURM_JOB_ID:-manual}.
 cd "$ROOT_DIR"
 
 echo "[env] Using PYTHON_BIN=$PYTHON_BIN"
+echo "[env] LD_PRELOAD=${LD_PRELOAD:-<empty>}"
 "$PYTHON_BIN" - <<'PY'
 import sys
 mods = ("numpy", "torch", "yaml", "datasets", "torchvision")

@@ -5,15 +5,16 @@ experiment:
 hardware:
   device: cuda
   target_gpu_class: rtx6000_48gb
-  min_vram_gb: 48
+  min_vram_gb: 47
+  min_free_vram_gb: 40
   num_workers: 4
   compile_model: false
   compile_mode: default
   compile_dynamic: false
   compile_no_cudagraphs: true
-  amp: false
+  amp: true
   amp_dtype: bfloat16
-  force_fp32_impl: true
+  force_fp32_impl: false
 
 data:
   train_dataset_name: princeton-vl/LayeredDepth-Syn
@@ -30,7 +31,7 @@ data:
   pin_memory: false
   persistent_workers: false
   prefetch_factor: 1
-  batch_size: 24
+  batch_size: 6
   val_batch_size: 1
   depth_scale: 1000.0
   depth_clip_min: 1.0e-3
@@ -46,7 +47,7 @@ architecture:
   num_sfin: 2
   num_rhag: 3
   window_size: 7
-  use_gradient_checkpointing: false
+  use_gradient_checkpointing: true
   fft_mode: fp32
   fft_pad_size: 256
   dino_embed_dim: 768
@@ -55,6 +56,7 @@ architecture:
   backbone_backend: timm_hf
   backbone_stop_on_failure: true
   backbone_fallback_approved: false
+  use_scalar_layer_prompt: false
   backbone_fallback_models:
     - backbone_repo: facebookresearch/dinov3
       backbone_model: dinov3_vitb16
@@ -69,7 +71,7 @@ architecture:
 
 training:
   epochs: 100
-  accum_steps: 1
+  accum_steps: 4
   dynamic_layers_enabled: true
   strict_empty_target: false
   memory_efficient_multistage: true
@@ -148,6 +150,7 @@ evaluation:
   checkpoint_name: best_checkpoint.pth
   stage_b_gate:
     enabled: true
+    allow_bootstrap_without_checkpoint: true
     metric_key: quads_acc
     min_pairs_acc: 5.0
     min_metric_total: 1.0
@@ -155,8 +158,8 @@ evaluation:
     require_non_decreasing_pairs_trend: true
     min_points: 2
     trend_eps: 1.0e-8
-    report_dir: ./runs/current/reports
-    source_report: ./runs/current/reports/final_report.json
+    report_dir: ./runs/current/reports/stage_b_gate
+    source_report: ./runs/current/reports/stage_b_gate/final_report.json
   stage_b_runtime:
     enabled: true
     max_epochs: 30

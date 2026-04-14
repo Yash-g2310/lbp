@@ -17,9 +17,16 @@ if [[ ! -f "$ROOT_DIR/cli.py" ]]; then
 fi
 PYTHON_BIN="${PYTHON_BIN:-python}"
 CONFIG_PATH="${CONFIG_PATH:-$ROOT_DIR/configs/server/quickcheck.yaml}"
+PY_ENV_ROOT="$(cd "$(dirname "$PYTHON_BIN")/.." && pwd)"
+if [[ -f "$PY_ENV_ROOT/lib/libstdc++.so.6" ]]; then
+	export LD_PRELOAD="$PY_ENV_ROOT/lib/libstdc++.so.6${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
 
 mkdir -p "$ROOT_DIR/runs/current/logs"
 cd "$ROOT_DIR"
+
+echo "[env] Using PYTHON_BIN=$PYTHON_BIN"
+echo "[env] LD_PRELOAD=${LD_PRELOAD:-<empty>}"
 
 "$PYTHON_BIN" scripts/server/preflight.py --config "$CONFIG_PATH" --sbatch "$ROOT_DIR/slurm/templates/quickcheck.sbatch"
 "$PYTHON_BIN" scripts/server/check_env.py --config "$CONFIG_PATH"

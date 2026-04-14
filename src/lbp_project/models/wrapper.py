@@ -65,6 +65,9 @@ class DINOSFIN_Architecture_NEW(nn.Module):
         self.adaln_zero_enabled = bool(adaln_zero_enabled)
         self.adaln_timestep_default = float(adaln_timestep_default)
         self.use_scalar_layer_prompt = bool(use_scalar_layer_prompt)
+        if self.adaln_zero_enabled and self.use_scalar_layer_prompt:
+            # AdaLN-Zero is the conditioning path for Stage-B flow; disable legacy scalar prompt fusion.
+            self.use_scalar_layer_prompt = False
         if self.max_layer_id < 1:
             raise ValueError(f"max_layer_id must be >= 1, got {self.max_layer_id}")
         if self.adaln_timestep_default < 0.0 or self.adaln_timestep_default > 1.0:

@@ -104,16 +104,19 @@ def collect_hardware_profile(cfg: Dict[str, Any]) -> Dict[str, Any]:
     requested_device = str(hw_cfg.get("device", "cpu")).strip().lower()
     target_gpu_class = str(hw_cfg.get("target_gpu_class", "")).strip()
     min_vram_gb = _as_float(hw_cfg.get("min_vram_gb", 0.0), 0.0)
+    min_free_vram_gb = _as_float(hw_cfg.get("min_free_vram_gb", 0.0), 0.0)
 
     profile: Dict[str, Any] = {
         "requested_device": requested_device,
         "target_gpu_class": target_gpu_class,
         "min_vram_gb": min_vram_gb,
+        "min_free_vram_gb": min_free_vram_gb,
         "cuda_available": False,
         "cuda_device_count": 0,
         "selected_cuda_index": 0,
         "gpu_name": "",
         "gpu_total_vram_gb": 0.0,
+        "gpu_free_vram_gb": 0.0,
         "issues": [],
     }
 
@@ -150,6 +153,11 @@ def collect_hardware_profile(cfg: Dict[str, Any]) -> Dict[str, Any]:
     total_vram_gb = float(props.total_memory) / (1024.0 ** 3)
     profile["gpu_name"] = str(props.name)
     profile["gpu_total_vram_gb"] = total_vram_gb
+    try:
+        free_bytes, _ = torch.cuda.mem_get_info(selected_index)
+        profile["gpu_free_vram_gb"] = float(free_bytes) / (1024.0 ** 3)
+    except Exception:
+        profile["gpu_free_vram_gb"] = 0.0
 
     if min_vram_gb > 0.0 and total_vram_gb + 1.0e-6 < min_vram_gb:
         profile["issues"].append(
@@ -163,16 +171,30 @@ def collect_hardware_profile(cfg: Dict[str, Any]) -> Dict[str, Any]:
             )
         )
 
+    free_vram_gb = float(profile.get("gpu_free_vram_gb", 0.0))
+    if min_free_vram_gb > 0.0 and free_vram_gb + 1.0e-6 < min_free_vram_gb:
+        profile["issues"].append(
+            (
+                "GPU free VRAM below policy: free={:.2f}GB required_min_free={:.2f}GB "
+                "(target_gpu_class={})"
+            ).format(
+                free_vram_gb,
+                min_free_vram_gb,
+                target_gpu_class or "unspecified",
+            )
+        )
+
     return profile
 
 
 def format_hardware_profile(profile: Dict[str, Any], prefix: str = "[preflight][hardware]") -> str:
     lines = [
-        "{} requested_device={} target_gpu_class={} min_vram_gb={:.2f}".format(
+        "{} requested_device={} target_gpu_class={} min_vram_gb={:.2f} min_free_vram_gb={:.2f}".format(
             prefix,
             profile.get("requested_device", "unknown"),
             profile.get("target_gpu_class", "") or "unspecified",
             float(profile.get("min_vram_gb", 0.0)),
+            float(profile.get("min_free_vram_gb", 0.0)),
         ),
         "{} cuda_available={} cuda_device_count={} selected_cuda_index={}".format(
             prefix,
@@ -184,10 +206,11 @@ def format_hardware_profile(profile: Dict[str, Any], prefix: str = "[preflight][
 
     if str(profile.get("gpu_name", "")).strip():
         lines.append(
-            "{} gpu_name={} gpu_total_vram_gb={:.2f}".format(
+            "{} gpu_name={} gpu_total_vram_gb={:.2f} gpu_free_vram_gb={:.2f}".format(
                 prefix,
                 profile.get("gpu_name", ""),
                 float(profile.get("gpu_total_vram_gb", 0.0)),
+                float(profile.get("gpu_free_vram_gb", 0.0)),
             )
         )
 

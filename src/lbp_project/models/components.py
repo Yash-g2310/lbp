@@ -6,7 +6,7 @@ Contains the building blocks for the SFIN-U-Net architecture.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.amp import autocast
+from torch.amp.autocast_mode import autocast
 from contextlib import nullcontext
 import warnings
 
@@ -135,6 +135,9 @@ class RHAG(nn.Module):
 # 2. SFIN BLOCK (Spatial-Frequency Interactive Network)
 # ==========================================
 class FourierUnit(nn.Module):
+    # Suppress pad_fp16 instability warning spam after first occurrence.
+    _global_pad_fp16_warned = False
+
     def __init__(self, in_channels, out_channels, fft_mode="fp32", fft_pad_size=256):
         super().__init__()
         self.conv_layer = nn.Conv2d(in_channels * 2 + 2, out_channels * 2, 1, bias=False)
@@ -238,11 +241,17 @@ class FourierUnit(nn.Module):
 
             if not torch.isfinite(output).all():
                 # Recover from unstable reduced-precision frequency path.
-                warnings.warn(
-                    "FourierUnit pad_fp16 produced non-finite output; retrying FFT path in fp32",
-                    RuntimeWarning,
+                if not FourierUnit._global_pad_fp16_warned:
+                    warnings.warn(
+                        "FourierUnit pad_fp16 produced non-finite output; "
+                        "using fp32 fallback for unstable calls",
+                        RuntimeWarning,
+                    )
+                    FourierUnit._global_pad_fp16_warned = True
+                output = _run_fp32_fft(
+                    x_fft_in,
+                    (int(x_fft_in.shape[-2]), int(x_fft_in.shape[-1])),
                 )
-                output = _run_fp32_fft(x_fft_in, x_fft_in.shape[-2:])
 
             output = output[..., :h_in, :w_in]
         else:
@@ -330,7 +339,7 @@ class SFINResBlock(nn.Module):
         self.conv1, self.conv2 = SFIB(channels, fft_mode=fft_mode, fft_pad_size=fft_pad_size), SFIB(channels, fft_mode=fft_mode, fft_pad_size=fft_pad_size)
     def forward(self, x):
         c = x.shape[1]
-        x_l, x_g = torch.split(x, (c // 2, c - c // 2), dim=1)
+        x_l, x_g = torch.split(x, [c // 2, c - c // 2], dim=1)
         id_l, id_g = x_l, x_g
         x_l, x_g = self.conv1((x_l, x_g))
         x_l, x_g = self.conv2((x_l, x_g))
