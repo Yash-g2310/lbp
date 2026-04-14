@@ -15,12 +15,16 @@ case "$MODE" in
     SBATCH_FILE="$ROOT_DIR/slurm/templates/train.sbatch"
     CONFIG_PATH="${2:-$ROOT_DIR/configs/server/default.yaml}"
     ;;
+  train-dept)
+    SBATCH_FILE="$ROOT_DIR/slurm/templates/train_department.sbatch"
+    CONFIG_PATH="${2:-$ROOT_DIR/configs/server/default.yaml}"
+    ;;
   eval)
     SBATCH_FILE="$ROOT_DIR/slurm/templates/eval_real.sbatch"
     CONFIG_PATH="${2:-$ROOT_DIR/configs/server/default.yaml}"
     ;;
   *)
-    echo "usage: $0 [quickcheck|train|eval] [config_path] [checkpoint_path_for_eval_optional]" >&2
+    echo "usage: $0 [quickcheck|train|train-dept|eval] [config_path] [checkpoint_path_for_eval_optional]" >&2
     exit 2
     ;;
 esac

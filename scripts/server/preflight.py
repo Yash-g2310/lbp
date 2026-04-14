@@ -7,7 +7,7 @@ import argparse
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, NoReturn
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -47,7 +47,7 @@ def parse_sbatch(path: Path) -> Dict[str, str]:
     return cfg
 
 
-def fail(msg: str) -> None:
+def fail(msg: str) -> NoReturn:
     raise SystemExit(f"[FAIL] {msg}")
 
 
@@ -66,6 +66,48 @@ def has_hf_auth() -> bool:
         return True
     token_file = Path.home() / ".cache" / "huggingface" / "token"
     return token_file.exists()
+
+
+def _stage_b_checkpoint_candidates(cfg: dict) -> list[Path]:
+    eval_cfg = cfg.get("evaluation", {})
+    train_ckpt_cfg = cfg.get("training", {}).get("checkpoint", {})
+    if not isinstance(train_ckpt_cfg, dict):
+        return []
+
+    ckpt_dir = Path(str(train_ckpt_cfg.get("dir", "./runs/current/checkpoints")))
+    ckpt_name = str(eval_cfg.get("checkpoint_name", train_ckpt_cfg.get("best_name", "best_checkpoint.pth")))
+    latest_name = str(train_ckpt_cfg.get("latest_name", "latest_checkpoint.pth"))
+
+    candidates = [ckpt_dir / ckpt_name, ckpt_dir / latest_name]
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for p in candidates:
+        key = str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+    return deduped
+
+
+def _allow_stage_b_bootstrap_without_checkpoint(cfg: dict, stage_b_gate) -> tuple[bool, str]:
+    eval_cfg = cfg.get("evaluation", {})
+    gate_cfg = eval_cfg.get("stage_b_gate", {})
+    if not isinstance(gate_cfg, dict):
+        gate_cfg = {}
+
+    if not bool(gate_cfg.get("allow_bootstrap_without_checkpoint", True)):
+        return False, "evaluation.stage_b_gate.allow_bootstrap_without_checkpoint=false"
+
+    existing = [p for p in _stage_b_checkpoint_candidates(cfg) if p.exists()]
+    if existing:
+        return False, "existing checkpoints present"
+
+    no_evidence_issue = any("No stage evidence reports found" in issue for issue in stage_b_gate.issues)
+    if not no_evidence_issue:
+        return False, "gate failed for reasons other than missing evidence"
+
+    return True, "no existing checkpoints and no prior stage evidence"
 
 
 def main() -> None:
@@ -92,7 +134,15 @@ def main() -> None:
     if not stage_b_gate.enabled:
         fail("evaluation.stage_b_gate.enabled must be true for Stage-B preflight")
     if not stage_b_gate.passed:
-        fail("Stage-B promotion gate failed.\n" + format_stage_b_gate(stage_b_gate))
+        allow_bootstrap, reason = _allow_stage_b_bootstrap_without_checkpoint(cfg, stage_b_gate)
+        if allow_bootstrap:
+            print(
+                "[stage-b-gate][bootstrap] bypassing pre-train gate once: "
+                f"{reason}. Fresh training run will create new checkpoints/evidence.",
+                flush=True,
+            )
+        else:
+            fail("Stage-B promotion gate failed.\n" + format_stage_b_gate(stage_b_gate))
 
     hw_cfg = cfg["hardware"]
     log_cfg = cfg.get("logging", {})

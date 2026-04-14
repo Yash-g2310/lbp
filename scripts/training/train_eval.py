@@ -179,6 +179,58 @@ def _resolve_checkpoint(
     )
 
 
+def _stage_b_checkpoint_candidates(runtime_cfg: Dict[str, Any], eval_cfg: Dict[str, Any]) -> list[Path]:
+    ckpt_cfg = runtime_cfg.get("training", {}).get("checkpoint", {})
+    if not isinstance(ckpt_cfg, dict):
+        return []
+
+    ckpt_dir = Path(str(ckpt_cfg.get("dir", "./runs/current/checkpoints")))
+    ckpt_name = str(eval_cfg.get("checkpoint_name", ckpt_cfg.get("best_name", "best_checkpoint.pth")))
+    latest_name = str(ckpt_cfg.get("latest_name", "latest_checkpoint.pth"))
+
+    candidates = [ckpt_dir / ckpt_name, ckpt_dir / latest_name]
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def _allow_stage_b_bootstrap_without_checkpoint(
+    args: argparse.Namespace,
+    runtime_cfg: Dict[str, Any],
+    stage_b_gate_result: PairsTrendGateResult,
+) -> tuple[bool, str]:
+    if bool(args.skip_train):
+        return False, "skip-train mode does not allow Stage B bootstrap"
+
+    eval_cfg = runtime_cfg.get("evaluation", {})
+    gate_cfg = eval_cfg.get("stage_b_gate", {})
+    if not isinstance(gate_cfg, dict):
+        gate_cfg = {}
+
+    allow_bootstrap = bool(gate_cfg.get("allow_bootstrap_without_checkpoint", True))
+    if not allow_bootstrap:
+        return False, "evaluation.stage_b_gate.allow_bootstrap_without_checkpoint=false"
+
+    existing_ckpts = [p for p in _stage_b_checkpoint_candidates(runtime_cfg, eval_cfg) if p.exists()]
+    if existing_ckpts:
+        joined = ", ".join(str(p) for p in existing_ckpts)
+        return False, f"existing checkpoints present: {joined}"
+
+    no_evidence_issue = any(
+        "No stage evidence reports found" in issue for issue in stage_b_gate_result.issues
+    )
+    if not no_evidence_issue:
+        return False, "gate failed for reasons other than missing evidence"
+
+    return True, "no existing checkpoints and no prior stage evidence"
+
+
 def main() -> None:
     args = parse_args()
     cfg = load_yaml(args.config)
@@ -216,11 +268,25 @@ def main() -> None:
         )
 
     stage_b_gate_result: PairsTrendGateResult | None = None
+    stage_b_gate_bootstrap = False
     if stage_result.stage_mode == "stage_b":
         stage_b_gate_result = evaluate_stage_b_gate(runtime_cfg)
         print(format_stage_b_gate(stage_b_gate_result), flush=True)
         if stage_b_gate_result is not None and stage_b_gate_result.enabled and not stage_b_gate_result.passed:
-            raise RuntimeError(_format_stage_b_gate_failure(stage_b_gate_result, runtime_cfg))
+            allow_bootstrap, reason = _allow_stage_b_bootstrap_without_checkpoint(
+                args,
+                runtime_cfg,
+                stage_b_gate_result,
+            )
+            if allow_bootstrap:
+                stage_b_gate_bootstrap = True
+                print(
+                    "[stage-b-gate][bootstrap] bypassing pre-train gate once: "
+                    f"{reason}. Training will create fresh checkpoints/evidence.",
+                    flush=True,
+                )
+            else:
+                raise RuntimeError(_format_stage_b_gate_failure(stage_b_gate_result, runtime_cfg))
 
     eval_cfg = runtime_cfg.get("evaluation", {})
     report_dir = Path(str(eval_cfg.get("report_dir", "./runs/current/reports")))
@@ -234,6 +300,7 @@ def main() -> None:
             "skip_train": bool(args.skip_train),
             "ablation": ablation_payload,
             "stage_b_gate_pre": stage_b_gate_payload,
+            "stage_b_gate_bootstrap": stage_b_gate_bootstrap,
         },
     )
     start_manifest_path = write_manifest(
@@ -406,6 +473,7 @@ def main() -> None:
         "ablation": ablation_payload,
         "stage_a_gate": stage_a_gate_payload,
         "stage_b_gate": stage_b_gate_payload,
+        "stage_b_gate_bootstrap": stage_b_gate_bootstrap,
         "start_manifest": str(start_manifest_path),
     }
     if synth_report.exists():

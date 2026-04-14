@@ -6,12 +6,18 @@ import argparse
 import json
 from pathlib import Path
 from typing import Any, Dict, cast
+import sys
 
 import torch
 import yaml
 from datasets import load_dataset
 import torchvision.transforms as transforms
 from tqdm import tqdm
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from lbp_project.models.backbone_loader import load_frozen_backbone
 from lbp_project.models.backbone_policy import resolve_backbone_spec
