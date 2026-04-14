@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import json
 import os
 import random
@@ -223,21 +224,53 @@ def flow_component_weights_for_epoch(
     epoch: int,
     total_epochs: int,
     staged_cfg: Dict[str, Any],
+    resume_start_epoch: int | None = None,
 ) -> Dict[str, float | str]:
     stage_a_fraction = float(staged_cfg.get("stage_a_fraction", 0.3))
     stage_b_fraction = float(staged_cfg.get("stage_b_fraction", 0.7))
     boundaries = compute_stage_boundaries(total_epochs, stage_a_fraction, stage_b_fraction)
-    stage2_active = epoch >= boundaries.stage_a_end_epoch
+    aux_start_epoch = boundaries.stage_a_end_epoch
+    if "stage2_aux_start_epoch" in staged_cfg:
+        aux_start_epoch = int(staged_cfg.get("stage2_aux_start_epoch", aux_start_epoch))
+    if bool(staged_cfg.get("stage2_aux_warmup_from_resume_start", False)):
+        if resume_start_epoch is None:
+            raise ValueError(
+                "training.staged_losses.stage2_aux_warmup_from_resume_start requires resume_start_epoch"
+            )
+        aux_start_epoch = int(resume_start_epoch)
+    if aux_start_epoch < 0:
+        raise ValueError(
+            f"training.staged_losses.stage2_aux_start_epoch must be >= 0, got {aux_start_epoch}"
+        )
+
+    stage2_active = epoch >= aux_start_epoch
 
     flow_weight = float(staged_cfg.get("flow_weight", 1.0))
     ssi_weight = float(staged_cfg.get("ssi_weight", 1.0))
     wavelet_base = float(staged_cfg.get("wavelet_weight", 0.0))
     ordinal_base = float(staged_cfg.get("ordinal_weight", 0.0))
     stage2_aux_ramp_epochs = max(1, int(staged_cfg.get("stage2_aux_ramp_epochs", 1)))
+    aux_ramp_start_from_zero = bool(staged_cfg.get("stage2_aux_ramp_start_from_zero", False))
+    aux_ramp_schedule = str(staged_cfg.get("stage2_aux_ramp_schedule", "linear")).strip().lower()
+    if aux_ramp_schedule not in {"linear", "cosine"}:
+        raise ValueError(
+            "training.staged_losses.stage2_aux_ramp_schedule must be one of ['linear', 'cosine'], "
+            f"got '{aux_ramp_schedule}'"
+        )
 
     if stage2_active:
-        stage2_epoch_index = max(0, epoch - boundaries.stage_a_end_epoch)
-        aux_ramp = min(1.0, float(stage2_epoch_index + 1) / float(stage2_aux_ramp_epochs))
+        stage2_epoch_index = max(0, epoch - aux_start_epoch)
+        if stage2_aux_ramp_epochs <= 1:
+            aux_ramp_linear = 1.0
+        elif aux_ramp_start_from_zero:
+            aux_ramp_linear = min(1.0, float(stage2_epoch_index) / float(stage2_aux_ramp_epochs - 1))
+        else:
+            aux_ramp_linear = min(1.0, float(stage2_epoch_index + 1) / float(stage2_aux_ramp_epochs))
+
+        aux_ramp = aux_ramp_linear
+        if aux_ramp_schedule == "cosine":
+            aux_ramp = 0.5 - 0.5 * math.cos(math.pi * aux_ramp_linear)
+
         wavelet_weight = wavelet_base * aux_ramp
         ordinal_weight = ordinal_base * aux_ramp
     else:
@@ -1228,9 +1261,13 @@ def main() -> None:
     ckpt_dir = Path(ckpt_cfg["dir"])
     latest_ckpt = ckpt_dir / ckpt_cfg["latest_name"]
     best_ckpt = ckpt_dir / ckpt_cfg["best_name"]
+    resume_path_raw = str(resume_cfg.get("path", "")).strip()
+    resume_checkpoint = Path(resume_path_raw) if resume_path_raw else latest_ckpt
+    if resume_path_raw:
+        log_terminal(log_to_terminal, f"[resume] using explicit checkpoint path: {resume_checkpoint}")
 
     start_epoch, best_val_loss = maybe_resume(
-        latest_ckpt,
+        resume_checkpoint,
         model,
         optimizer,
         scheduler,
@@ -1361,7 +1398,12 @@ def main() -> None:
         step_counter = 0
         if flow_mode_enabled:
             decoder_w, bottleneck_w = 0.0, 0.0
-            flow_weights = flow_component_weights_for_epoch(epoch, max_epochs, staged_cfg)
+            flow_weights = flow_component_weights_for_epoch(
+                epoch,
+                max_epochs,
+                staged_cfg,
+                resume_start_epoch=start_epoch,
+            )
             flow_w = float(flow_weights["flow_weight"])
             ssi_w = float(flow_weights["ssi_weight"])
             wavelet_w = float(flow_weights["wavelet_weight"])

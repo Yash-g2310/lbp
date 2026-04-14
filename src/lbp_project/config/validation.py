@@ -275,6 +275,8 @@ def validate_config_dict(cfg: Dict[str, Any], source: str | Path | None = None) 
             raise ValueError(
                 f"{_path_label(source)}: training.resume.fail_on_config_mismatch must be a boolean"
             )
+        if "path" in resume_cfg and not isinstance(resume_cfg.get("path"), str):
+            raise ValueError(f"{_path_label(source)}: training.resume.path must be a string when provided")
 
     staged_cfg = cfg["training"].get("staged_losses", {})
     if staged_cfg.get("enabled", False):
@@ -341,6 +343,30 @@ def validate_config_dict(cfg: Dict[str, Any], source: str | Path | None = None) 
                 if aux_ramp_epochs < 1:
                     raise ValueError(
                         f"{_path_label(source)}: training.staged_losses.stage2_aux_ramp_epochs must be >= 1"
+                    )
+            if "stage2_aux_start_epoch" in staged_cfg:
+                aux_start_epoch = int(staged_cfg.get("stage2_aux_start_epoch", 0))
+                if aux_start_epoch < 0:
+                    raise ValueError(
+                        f"{_path_label(source)}: training.staged_losses.stage2_aux_start_epoch must be >= 0"
+                    )
+            if "stage2_aux_warmup_from_resume_start" in staged_cfg and not isinstance(
+                staged_cfg.get("stage2_aux_warmup_from_resume_start"), bool
+            ):
+                raise ValueError(
+                    f"{_path_label(source)}: training.staged_losses.stage2_aux_warmup_from_resume_start must be a boolean"
+                )
+            if "stage2_aux_ramp_start_from_zero" in staged_cfg and not isinstance(
+                staged_cfg.get("stage2_aux_ramp_start_from_zero"), bool
+            ):
+                raise ValueError(
+                    f"{_path_label(source)}: training.staged_losses.stage2_aux_ramp_start_from_zero must be a boolean"
+                )
+            if "stage2_aux_ramp_schedule" in staged_cfg:
+                schedule = str(staged_cfg.get("stage2_aux_ramp_schedule", "linear")).strip().lower()
+                if schedule not in {"linear", "cosine"}:
+                    raise ValueError(
+                        f"{_path_label(source)}: training.staged_losses.stage2_aux_ramp_schedule must be one of ['linear', 'cosine']"
                     )
 
     ablation_cfg = cfg["training"].get("ablation", {})
